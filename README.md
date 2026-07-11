@@ -68,11 +68,12 @@ Claude Code. Ничего вводить не нужно.
 - **Обновить сейчас** (`r`)
 - **Выход** (`q`)
 
-## Превью панели
+## Превью (dev)
 
 ```bash
 swiftc -O -o /tmp/ClaudeBar ClaudeBar.swift
-/tmp/ClaudeBar --panel out.png dark    # или light
+/tmp/ClaudeBar --panel  out.png dark    # панель (light|dark)
+/tmp/ClaudeBar --shapes out.png dark    # все формы шкалы
 ```
 
 ## Структура
