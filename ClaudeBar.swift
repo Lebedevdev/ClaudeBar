@@ -106,32 +106,83 @@ func meterColor(_ f: CGFloat) -> NSColor {
                    blue: mix(l.blueComponent, h.blueComponent), alpha: 1)
 }
 
-// Сегментная шкала параллелограммами (стиль ▰▱▱▱ — со скосом, как в терминале).
-// 10 блоков = ~10% каждый. mono=true — зажжённые блоки белые/тёмные (без цвета).
-func drawBlocks(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
-    let n = 10
-    let gap: CGFloat = 1.4
-    let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
-    let skew = min(rect.height * 0.34, 1.9)             // наклон верхней грани вправо
+// --- Формы шкалы для менюбара ---
+// Цвет зажжённого сегмента (по позиции, green→red) / монохром / пустой.
+func litColor(_ pos: CGFloat, mono: Bool, dark: Bool) -> NSColor {
+    if mono { return dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1) }
+    return meterColor(pos)
+}
+func dimColor(dark: Bool) -> NSColor { dark ? NSColor(white: 1, alpha: 0.20) : NSColor(white: 0, alpha: 0.15) }
+func litCount(_ frac: CGFloat, _ n: Int) -> Int {
     let f = max(0, min(1, frac))
-    let lit = f <= 0 ? 0 : max(1, Int((f * CGFloat(n)).rounded()))   // >0% → хотя бы один блок
-    let empty = dark ? NSColor(white: 1, alpha: 0.20) : NSColor(white: 0, alpha: 0.15)
-    let monoOn = dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)
+    return f <= 0 ? 0 : max(1, Int((f * CGFloat(n)).rounded()))     // >0% → хотя бы один сегмент
+}
+
+// Форма 0 (прямые) / 1 (параллелограммы): 10 сегментов, skew задаёт наклон.
+func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew: CGFloat) {
+    let n = 10, gap: CGFloat = 1.4
+    let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
+    let lit = litCount(frac, n)
     let y0 = rect.minY, y1 = rect.maxY
     for i in 0..<n {
         let x = rect.minX + CGFloat(i)*(bw+gap)
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: x, y: y0))                  // низ-лево
-        path.line(to: NSPoint(x: x + bw - skew, y: y0))      // низ-право
-        path.line(to: NSPoint(x: x + bw, y: y1))             // верх-право
-        path.line(to: NSPoint(x: x + skew, y: y1))           // верх-лево
-        path.close()
-        if i < lit {
-            (mono ? monoOn : meterColor(CGFloat(i)/CGFloat(n-1))).setFill()
+        let path: NSBezierPath
+        if skew <= 0 {
+            path = NSBezierPath(roundedRect: NSRect(x: x, y: y0, width: bw, height: rect.height), xRadius: 0.8, yRadius: 0.8)
         } else {
-            empty.setFill()
+            path = NSBezierPath()
+            path.move(to: NSPoint(x: x, y: y0))
+            path.line(to: NSPoint(x: x + bw - skew, y: y0))
+            path.line(to: NSPoint(x: x + bw, y: y1))
+            path.line(to: NSPoint(x: x + skew, y: y1))
+            path.close()
         }
+        (i < lit ? litColor(CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
         path.fill()
+    }
+}
+
+// Форма 2 (сигнал): 5 столбиков растущей высоты, как индикатор сети телефона.
+func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
+    let n = 5, gap: CGFloat = 2.0
+    let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
+    let lit = litCount(frac, n)
+    let minH = rect.height * 0.34
+    for i in 0..<n {
+        let h = minH + (rect.height - minH) * CGFloat(i) / CGFloat(n-1)
+        let x = rect.minX + CGFloat(i)*(bw+gap)
+        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: bw, height: h), xRadius: 1.2, yRadius: 1.2)
+        (i < lit ? litColor(CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
+        path.fill()
+    }
+}
+
+// Форма 3 (батарея): корпус macOS-батарейки с носиком, заливка по доле (моя версия).
+func drawBattery(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
+    let nubW = max(1.4, rect.height * 0.16)
+    let body = NSRect(x: rect.minX, y: rect.minY, width: rect.width - nubW - 1, height: rect.height)
+    let stroke = dark ? NSColor(white: 1, alpha: 0.55) : NSColor(white: 0, alpha: 0.45)
+    let outline = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
+    outline.lineWidth = 1
+    stroke.setStroke(); outline.stroke()
+    let nub = NSBezierPath(roundedRect: NSRect(x: body.maxX + 0.5, y: rect.minY + rect.height*0.3, width: nubW, height: rect.height*0.4),
+                           xRadius: nubW/2, yRadius: nubW/2)
+    stroke.setFill(); nub.fill()
+    let inset = body.insetBy(dx: 2, dy: 1.3)
+    let f = max(0, min(1, frac))
+    let fw = f <= 0 ? 0 : max(inset.height * 0.4, inset.width * f)
+    let fill = NSBezierPath(roundedRect: NSRect(x: inset.minX, y: inset.minY, width: fw, height: inset.height), xRadius: 1, yRadius: 1)
+    (mono ? (dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)) : meterColor(f)).setFill()
+    fill.fill()
+}
+
+// Диспетчер формы шкалы.
+func drawShape(_ shape: Int, _ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
+    switch shape {
+    case 0: drawSegments(rect, frac, dark: dark, mono: mono, skew: 0)
+    case 2: drawSignal(rect, frac, dark: dark, mono: mono)
+    case 3: drawBattery(rect, frac, dark: dark, mono: mono)
+    default: drawSegments(rect, frac, dark: dark, mono: mono, skew: min(rect.height * 0.34, 1.9))
     }
 }
 
@@ -360,6 +411,36 @@ if argv.count >= 3 && argv[1] == "--panel" {
     exit(0)
 }
 
+// Превью всех форм шкалы: ClaudeBar --shapes out.png [light|dark]
+if argv.count >= 3 && argv[1] == "--shapes" {
+    let dark = !argv.contains("light")
+    let shapes: [(Int, String)] = [(0, "Прямые"), (1, "Параллелограммы"), (2, "Сигнал"), (3, "Батарея")]
+    let fracs: [CGFloat] = [0.28, 0.62, 0.93]
+    let rowH: CGFloat = 26, labelCol: CGFloat = 130, cellW: CGFloat = 90, pad: CGFloat = 12
+    let W = pad*2 + labelCol + cellW*CGFloat(fracs.count)
+    let H = pad*2 + rowH*CGFloat(shapes.count)
+    let img = NSImage(size: NSSize(width: W, height: H))
+    img.lockFocus()
+    (dark ? NSColor(white: 0.13, alpha: 1) : NSColor(white: 0.92, alpha: 1)).setFill()
+    NSBezierPath(rect: NSRect(x: 0, y: 0, width: W, height: H)).fill()
+    let txt = dark ? NSColor(white: 0.9, alpha: 1) : NSColor(white: 0.15, alpha: 1)
+    for (si, (shape, name)) in shapes.enumerated() {
+        let yMid = H - pad - CGFloat(si)*rowH - rowH/2
+        let la = NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: txt])
+        la.draw(at: NSPoint(x: pad, y: yMid - la.size().height/2))
+        for (fi, frac) in fracs.enumerated() {
+            drawShape(shape, NSRect(x: pad + labelCol + CGFloat(fi)*cellW, y: yMid - 4.5, width: 58, height: 9),
+                      frac, dark: dark, mono: false)
+        }
+    }
+    img.unlockFocus()
+    if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: argv[2]))
+    }
+    print("превью форм готово: \(argv[2])")
+    exit(0)
+}
+
 // ============================================================================
 //  Приложение
 // ============================================================================
@@ -370,15 +451,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var usage = Usage()
     var lastFetch: Date?
+    // форма шкалы: 0 прямые · 1 параллелограммы · 2 сигнал · 3 батарея
+    var barShape: Int = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "barShape") == nil ? 1 : d.integer(forKey: "barShape")
+    }()
     // какие окна в баре: 0 обе (5ч+7д) · 1 только 5ч · 2 только 7д
     var rowMode = UserDefaults.standard.integer(forKey: "rowMode")
-    // показывать проценты рядом со шкалой
+    // цвет шкалы: 0 цветной (green→red) · 1 монохром (белый)
+    var colorMode = UserDefaults.standard.integer(forKey: "colorMode")
+    // показывать подпись (5ч/7д) и проценты
+    var showLabel: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "showLabel") == nil ? true : d.bool(forKey: "showLabel")
+    }()
     var showPercent: Bool = {
         let d = UserDefaults.standard
         return d.object(forKey: "showPercent") == nil ? true : d.bool(forKey: "showPercent")
     }()
-    // цвет шкалы: 0 цветной (green→red) · 1 монохром (белый)
-    var colorMode = UserDefaults.standard.integer(forKey: "colorMode")
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -417,12 +507,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func pctFixed(_ p: Double) -> String {
-        let n = max(0, min(999, Int(p.rounded())))
-        let s = String(n)
-        return String(repeating: "\u{2007}", count: max(0, 3 - s.count)) + s + "%"
-    }
-
     // Рисуем сегментные шкалы (5ч/7д) блоками; строки и проценты — по настройкам.
     func renderMenuImage(dark: Bool) -> NSImage {
         var rows: [(String, Double)] = []
@@ -435,22 +519,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let labelColor = dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.15, alpha: 1)
         let labelFont = NSFont.systemFont(ofSize: single ? 9 : 7.5, weight: .semibold)
         let numFont = NSFont.monospacedDigitSystemFont(ofSize: single ? 9.5 : 8, weight: .medium)
-        let labelW: CGFloat = 15, gap: CGFloat = 4, barW: CGFloat = 58
+        let labelW: CGFloat = showLabel ? 15 : 0
+        let labelGap: CGFloat = showLabel ? 4 : 0
+        let barW: CGFloat = 58
+        let numGap: CGFloat = showPercent ? 4 : 0
         let numW: CGFloat = showPercent ? 25 : 0
-        let W = ceil(labelW + gap + barW + (showPercent ? 4 + numW : 0))
+        let W = ceil(labelW + labelGap + barW + numGap + numW)
         let H: CGFloat = 18
-        let blockH: CGFloat = single ? 7 : 5
-        let yMids: [CGFloat] = single ? [9] : [13.5, 4.5]
+        let barH: CGFloat = single ? 9 : 6
+        let yMids: [CGFloat] = single ? [9] : [13, 5]
 
-        let img = NSImage(size: NSSize(width: W, height: H))
+        let img = NSImage(size: NSSize(width: max(W, 12), height: H))
         img.lockFocus()
         for (idx, r) in rows.enumerated() {
             let (label, pct) = r, yMid = yMids[idx]
-            let la = NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: labelColor])
-            let lsz = la.size()
-            la.draw(at: NSPoint(x: labelW - lsz.width, y: yMid - lsz.height/2))
-            drawBlocks(NSRect(x: labelW + gap, y: yMid - blockH/2, width: barW, height: blockH),
-                       CGFloat(pct / 100), dark: dark, mono: mono)
+            if showLabel {
+                let la = NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: labelColor])
+                let lsz = la.size()
+                la.draw(at: NSPoint(x: labelW - lsz.width, y: yMid - lsz.height/2))
+            }
+            drawShape(barShape, NSRect(x: labelW + labelGap, y: yMid - barH/2, width: barW, height: barH),
+                      CGFloat(pct / 100), dark: dark, mono: mono)
             if showPercent {
                 let col: NSColor = mono ? labelColor
                     : (pct >= 95 ? NSColor(red: 1, green: 0.30, blue: 0.25, alpha: 1)
@@ -490,6 +579,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if event.type == .rightMouseUp {
             let menu = NSMenu()
 
+            // форма шкалы
+            let shapeMenu = NSMenu()
+            for (tag, t) in [(0, "Прямые"), (1, "Параллелограммы"), (2, "Сигнал"), (3, "Батарея")] {
+                let it = NSMenuItem(title: t, action: #selector(setShape(_:)), keyEquivalent: "")
+                it.target = self; it.tag = tag; it.state = barShape == tag ? .on : .off
+                shapeMenu.addItem(it)
+            }
+            let shapeItem = NSMenuItem(title: "Форма шкалы", action: nil, keyEquivalent: "")
+            menu.addItem(shapeItem); menu.setSubmenu(shapeMenu, for: shapeItem)
+
             // какие окна показывать
             let rowMenu = NSMenu()
             for (tag, t) in [(0, "5ч и 7д"), (1, "Только 5ч"), (2, "Только 7д")] {
@@ -497,21 +596,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 it.target = self; it.tag = tag; it.state = rowMode == tag ? .on : .off
                 rowMenu.addItem(it)
             }
-            let rowItem = NSMenuItem(title: "Показывать", action: nil, keyEquivalent: "")
+            let rowItem = NSMenuItem(title: "Окна", action: nil, keyEquivalent: "")
             menu.addItem(rowItem); menu.setSubmenu(rowMenu, for: rowItem)
 
-            // цвет шкалы
-            let colorMenu = NSMenu()
-            for (tag, t) in [(0, "Цветной"), (1, "Монохром (белый)")] {
-                let it = NSMenuItem(title: t, action: #selector(setColorMode(_:)), keyEquivalent: "")
-                it.target = self; it.tag = tag; it.state = colorMode == tag ? .on : .off
-                colorMenu.addItem(it)
-            }
-            let colorItem = NSMenuItem(title: "Цвет шкалы", action: nil, keyEquivalent: "")
-            menu.addItem(colorItem); menu.setSubmenu(colorMenu, for: colorItem)
+            menu.addItem(NSMenuItem.separator())
 
-            // проценты вкл/выкл
-            let pctItem = NSMenuItem(title: "Показывать проценты", action: #selector(togglePercent), keyEquivalent: "")
+            // тумблеры: монохром · подпись · проценты
+            let monoItem = NSMenuItem(title: "Монохром", action: #selector(toggleMono), keyEquivalent: "")
+            monoItem.target = self; monoItem.state = colorMode == 1 ? .on : .off
+            menu.addItem(monoItem)
+            let labelItem = NSMenuItem(title: "Подпись 5ч / 7д", action: #selector(toggleLabel), keyEquivalent: "")
+            labelItem.target = self; labelItem.state = showLabel ? .on : .off
+            menu.addItem(labelItem)
+            let pctItem = NSMenuItem(title: "Проценты", action: #selector(togglePercent), keyEquivalent: "")
             pctItem.target = self; pctItem.state = showPercent ? .on : .off
             menu.addItem(pctItem)
 
@@ -530,14 +627,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func setShape(_ sender: NSMenuItem) {
+        barShape = sender.tag
+        UserDefaults.standard.set(barShape, forKey: "barShape")
+        render()
+    }
     @objc func setRowMode(_ sender: NSMenuItem) {
         rowMode = sender.tag
         UserDefaults.standard.set(rowMode, forKey: "rowMode")
         render()
     }
-    @objc func setColorMode(_ sender: NSMenuItem) {
-        colorMode = sender.tag
+    @objc func toggleMono() {
+        colorMode = colorMode == 1 ? 0 : 1
         UserDefaults.standard.set(colorMode, forKey: "colorMode")
+        render()
+    }
+    @objc func toggleLabel() {
+        showLabel.toggle()
+        UserDefaults.standard.set(showLabel, forKey: "showLabel")
         render()
     }
     @objc func togglePercent() {
