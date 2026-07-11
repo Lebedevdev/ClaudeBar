@@ -160,23 +160,23 @@ func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
 
 // Форма 3 (батарея): пропорции menu-bar батарейки macOS (корпус + носик), заливка по доле.
 func drawBattery(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
-    let nubW = max(1.2, rect.height * 0.22)
-    let body = NSRect(x: rect.minX, y: rect.minY, width: rect.width - nubW, height: rect.height)
+    let h = rect.height
+    let nubW = max(1.2, h * 0.15)
+    let body = NSRect(x: rect.minX, y: rect.minY, width: rect.width - nubW, height: h)
     let stroke = dark ? NSColor(white: 1, alpha: 0.6) : NSColor(white: 0, alpha: 0.5)
-    let outline = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5),
-                               xRadius: rect.height*0.3, yRadius: rect.height*0.3)
-    outline.lineWidth = max(1, rect.height*0.12)
+    let outline = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: h*0.32, yRadius: h*0.32)
+    outline.lineWidth = max(1, h*0.1)
     stroke.setStroke(); outline.stroke()
-    let nubH = rect.height * 0.42
-    let nub = NSBezierPath(roundedRect: NSRect(x: body.maxX - 0.3, y: rect.minY + (rect.height-nubH)/2, width: nubW, height: nubH),
+    let nubH = h * 0.42
+    let nub = NSBezierPath(roundedRect: NSRect(x: body.maxX - 0.3, y: rect.minY + (h-nubH)/2, width: nubW, height: nubH),
                            xRadius: nubW*0.4, yRadius: nubW*0.4)
     stroke.setFill(); nub.fill()
-    let pad = rect.height * 0.22
+    let pad = max(1.5, h * 0.17)
     let inner = body.insetBy(dx: pad, dy: pad)
     let f = max(0, min(1, frac))
     let fw = f <= 0 ? 0 : max(inner.height, inner.width * f)      // мин. = квадратик
     let fill = NSBezierPath(roundedRect: NSRect(x: inner.minX, y: inner.minY, width: fw, height: inner.height),
-                            xRadius: rect.height*0.14, yRadius: rect.height*0.14)
+                            xRadius: h*0.16, yRadius: h*0.16)
     (mono ? (dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)) : meterColor(f)).setFill()
     fill.fill()
 }
@@ -184,9 +184,20 @@ func drawBattery(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
 // Естественная ширина шкалы под форму: сегменты широкие, сигнал/батарея компактные.
 func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
     switch shape {
-    case 2: return 18          // сигнал — компактный кластер, как на iPhone
-    case 3: return h * 2.3     // батарея — пропорции macOS
-    default: return 58         // сегменты (10 блоков)
+    case 2: return max(16, h * 1.4)  // сигнал — компактный кластер, как на iPhone
+    case 3: return h * 2.2           // батарея — пропорции macOS (~2:1)
+    default: return 58               // сегменты (10 блоков)
+    }
+}
+
+// Высота шкалы под форму. big=крупные иконки (ближе к размеру настоящих в баре).
+// В одну строку батарея выше всех (как настоящая), сигнал средний, сегменты тоньше.
+func shapeHeight(_ shape: Int, single: Bool, big: Bool) -> CGFloat {
+    if !single { return big ? 8 : 6 }
+    switch shape {
+    case 3: return big ? 17 : 13     // батарея
+    case 2: return big ? 15 : 11     // сигнал
+    default: return big ? 12 : 9     // сегменты
     }
 }
 
@@ -442,8 +453,9 @@ if argv.count >= 3 && argv[1] == "--shapes" {
         let yMid = H - pad - CGFloat(si)*rowH - rowH/2
         let la = NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: txt])
         la.draw(at: NSPoint(x: pad, y: yMid - la.size().height/2))
+        let ph = shapeHeight(shape, single: true, big: true)
         for (fi, frac) in fracs.enumerated() {
-            drawShape(shape, NSRect(x: pad + labelCol + CGFloat(fi)*cellW, y: yMid - 4.5, width: shapeWidth(shape, 9), height: 9),
+            drawShape(shape, NSRect(x: pad + labelCol + CGFloat(fi)*cellW, y: yMid - ph/2, width: shapeWidth(shape, ph), height: ph),
                       frac, dark: dark, mono: false)
         }
     }
@@ -474,6 +486,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var rowMode = UserDefaults.standard.integer(forKey: "rowMode")
     // цвет шкалы: 0 цветной (green→red) · 1 монохром (белый)
     var colorMode = UserDefaults.standard.integer(forKey: "colorMode")
+    // крупные иконки (ближе к размеру настоящих в баре)
+    var bigIcons = UserDefaults.standard.bool(forKey: "bigIcons")
     // показывать подпись (5ч/7д) и проценты
     var showLabel: Bool = {
         let d = UserDefaults.standard
@@ -531,17 +545,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mono = colorMode == 1
 
         let labelColor = dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.15, alpha: 1)
-        let labelFont = NSFont.systemFont(ofSize: single ? 9 : 7.5, weight: .semibold)
-        let numFont = NSFont.monospacedDigitSystemFont(ofSize: single ? 9.5 : 8, weight: .medium)
+        let lSize: CGFloat = single ? (bigIcons ? 10.5 : 9) : (bigIcons ? 8.5 : 7.5)
+        let nSize: CGFloat = single ? (bigIcons ? 11 : 9.5) : (bigIcons ? 9 : 8)
+        let labelFont = NSFont.systemFont(ofSize: lSize, weight: .semibold)
+        let numFont = NSFont.monospacedDigitSystemFont(ofSize: nSize, weight: .medium)
         let labelW: CGFloat = showLabel ? 15 : 0
         let labelGap: CGFloat = showLabel ? 4 : 0
-        let H: CGFloat = 18
-        let barH: CGFloat = single ? 9 : 6
+        let H: CGFloat = bigIcons ? 22 : 18
+        let barH: CGFloat = shapeHeight(barShape, single: single, big: bigIcons)
         let barW: CGFloat = shapeWidth(barShape, barH)
         let numGap: CGFloat = showPercent ? 4 : 0
         let numW: CGFloat = showPercent ? 25 : 0
         let W = ceil(labelW + labelGap + barW + numGap + numW)
-        let yMids: [CGFloat] = single ? [9] : [13, 5]
+        let yMids: [CGFloat] = single ? [H/2] : (bigIcons ? [15, 6] : [13, 5])
 
         let img = NSImage(size: NSSize(width: max(W, 12), height: H))
         img.lockFocus()
@@ -615,7 +631,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             menu.addItem(NSMenuItem.separator())
 
-            // тумблеры: монохром · подпись · проценты
+            // тумблеры: крупные иконки · монохром · подпись · проценты
+            let bigItem = NSMenuItem(title: "Крупные иконки", action: #selector(toggleBig), keyEquivalent: "")
+            bigItem.target = self; bigItem.state = bigIcons ? .on : .off
+            menu.addItem(bigItem)
             let monoItem = NSMenuItem(title: "Монохром", action: #selector(toggleMono), keyEquivalent: "")
             monoItem.target = self; monoItem.state = colorMode == 1 ? .on : .off
             menu.addItem(monoItem)
@@ -649,6 +668,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func setRowMode(_ sender: NSMenuItem) {
         rowMode = sender.tag
         UserDefaults.standard.set(rowMode, forKey: "rowMode")
+        render()
+    }
+    @objc func toggleBig() {
+        bigIcons.toggle()
+        UserDefaults.standard.set(bigIcons, forKey: "bigIcons")
         render()
     }
     @objc func toggleMono() {
