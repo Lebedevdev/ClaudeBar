@@ -1,7 +1,7 @@
 # ClaudeBar
 
 Лимиты подписки **Claude** (Pro/Max) прямо в менюбаре Mac.<br>
-Седьмой инструмент семейства: Pomodoro → TempBar → BreakBar → NetBar → RadioBar → NoteBar.
+Шестой инструмент семейства: TempBar → BreakBar → NetBar → RadioBar → NoteBar.
 
 ![тёмная](assets/panel-dark.png)
 
