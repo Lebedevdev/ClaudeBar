@@ -158,46 +158,20 @@ func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
     }
 }
 
-// Форма 3 (батарея): пропорции menu-bar батарейки macOS (корпус + носик), заливка по доле.
-func drawBattery(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
-    let h = rect.height
-    let nubW = max(1.2, h * 0.15)
-    let body = NSRect(x: rect.minX, y: rect.minY, width: rect.width - nubW, height: h)
-    let stroke = dark ? NSColor(white: 1, alpha: 0.6) : NSColor(white: 0, alpha: 0.5)
-    let outline = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: h*0.32, yRadius: h*0.32)
-    outline.lineWidth = max(1, h*0.1)
-    stroke.setStroke(); outline.stroke()
-    let nubH = h * 0.42
-    let nub = NSBezierPath(roundedRect: NSRect(x: body.maxX - 0.3, y: rect.minY + (h-nubH)/2, width: nubW, height: nubH),
-                           xRadius: nubW*0.4, yRadius: nubW*0.4)
-    stroke.setFill(); nub.fill()
-    let pad = max(1.5, h * 0.17)
-    let inner = body.insetBy(dx: pad, dy: pad)
-    let f = max(0, min(1, frac))
-    let fw = f <= 0 ? 0 : max(inner.height, inner.width * f)      // мин. = квадратик
-    let fill = NSBezierPath(roundedRect: NSRect(x: inner.minX, y: inner.minY, width: fw, height: inner.height),
-                            xRadius: h*0.16, yRadius: h*0.16)
-    (mono ? (dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)) : meterColor(f)).setFill()
-    fill.fill()
-}
-
-// Естественная ширина шкалы под форму: сегменты широкие, сигнал/батарея компактные.
+// Естественная ширина шкалы под форму: сегменты широкие, сигнал компактный.
 func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
     switch shape {
     case 2: return max(16, h * 1.4)  // сигнал — компактный кластер, как на iPhone
-    case 3: return h * 2.2           // батарея — пропорции macOS (~2:1)
     default: return 58               // сегменты (10 блоков)
     }
 }
 
-// Высота шкалы под форму. big=крупные иконки (ближе к размеру настоящих в баре).
-// В одну строку батарея выше всех (как настоящая), сигнал средний, сегменты тоньше.
-func shapeHeight(_ shape: Int, single: Bool, big: Bool) -> CGFloat {
-    if !single { return big ? 8 : 6 }
+// Высота шкалы под форму. Сигнал чуть крупнее, сегменты тоньше; в две строки компактно.
+func shapeHeight(_ shape: Int, single: Bool) -> CGFloat {
+    if !single { return 6 }
     switch shape {
-    case 3: return big ? 17 : 13     // батарея
-    case 2: return big ? 15 : 11     // сигнал
-    default: return big ? 12 : 9     // сегменты
+    case 2: return 13     // сигнал — чуть крупнее
+    default: return 9     // сегменты
     }
 }
 
@@ -206,7 +180,6 @@ func drawShape(_ shape: Int, _ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: 
     switch shape {
     case 0: drawSegments(rect, frac, dark: dark, mono: mono, skew: 0)
     case 2: drawSignal(rect, frac, dark: dark, mono: mono)
-    case 3: drawBattery(rect, frac, dark: dark, mono: mono)
     default: drawSegments(rect, frac, dark: dark, mono: mono, skew: min(rect.height * 0.34, 1.9))
     }
 }
@@ -439,7 +412,7 @@ if argv.count >= 3 && argv[1] == "--panel" {
 // Превью всех форм шкалы: ClaudeBar --shapes out.png [light|dark]
 if argv.count >= 3 && argv[1] == "--shapes" {
     let dark = !argv.contains("light")
-    let shapes: [(Int, String)] = [(0, "Прямые"), (1, "Параллелограммы"), (2, "Сигнал"), (3, "Батарея")]
+    let shapes: [(Int, String)] = [(0, "Прямые"), (1, "Параллелограммы"), (2, "Сигнал")]
     let fracs: [CGFloat] = [0.28, 0.62, 0.93]
     let rowH: CGFloat = 26, labelCol: CGFloat = 130, cellW: CGFloat = 90, pad: CGFloat = 12
     let W = pad*2 + labelCol + cellW*CGFloat(fracs.count)
@@ -453,7 +426,7 @@ if argv.count >= 3 && argv[1] == "--shapes" {
         let yMid = H - pad - CGFloat(si)*rowH - rowH/2
         let la = NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: txt])
         la.draw(at: NSPoint(x: pad, y: yMid - la.size().height/2))
-        let ph = shapeHeight(shape, single: true, big: true)
+        let ph = shapeHeight(shape, single: true)
         for (fi, frac) in fracs.enumerated() {
             drawShape(shape, NSRect(x: pad + labelCol + CGFloat(fi)*cellW, y: yMid - ph/2, width: shapeWidth(shape, ph), height: ph),
                       frac, dark: dark, mono: false)
@@ -486,8 +459,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var rowMode = UserDefaults.standard.integer(forKey: "rowMode")
     // цвет шкалы: 0 цветной (green→red) · 1 монохром (белый)
     var colorMode = UserDefaults.standard.integer(forKey: "colorMode")
-    // крупные иконки (ближе к размеру настоящих в баре)
-    var bigIcons = UserDefaults.standard.bool(forKey: "bigIcons")
     // показывать подпись (5ч/7д) и проценты
     var showLabel: Bool = {
         let d = UserDefaults.standard
@@ -545,28 +516,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mono = colorMode == 1
 
         let labelColor = dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.15, alpha: 1)
-        let lSize: CGFloat = single ? (bigIcons ? 10.5 : 9) : (bigIcons ? 8.5 : 7.5)
-        let nSize: CGFloat = single ? (bigIcons ? 11 : 9.5) : (bigIcons ? 9 : 8)
-        let labelFont = NSFont.systemFont(ofSize: lSize, weight: .semibold)
-        let numFont = NSFont.monospacedDigitSystemFont(ofSize: nSize, weight: .medium)
+        let labelFont = NSFont.systemFont(ofSize: single ? 9 : 7.5, weight: .semibold)
+        let numFont = NSFont.monospacedDigitSystemFont(ofSize: single ? 9.5 : 8, weight: .medium)
         let labelW: CGFloat = showLabel ? 15 : 0
         let labelGap: CGFloat = showLabel ? 4 : 0
-        let H: CGFloat = bigIcons ? 22 : 18
-        let barH: CGFloat = shapeHeight(barShape, single: single, big: bigIcons)
+        let H: CGFloat = 18
+        let barH: CGFloat = shapeHeight(barShape, single: single)
         let barW: CGFloat = shapeWidth(barShape, barH)
         let numGap: CGFloat = showPercent ? 4 : 0
         let numW: CGFloat = showPercent ? 25 : 0
         let W = ceil(labelW + labelGap + barW + numGap + numW)
-        let yMids: [CGFloat] = single ? [H/2] : (bigIcons ? [15, 6] : [13, 5])
+        let yMids: [CGFloat] = single ? [9] : [13, 5]
 
         let img = NSImage(size: NSSize(width: max(W, 12), height: H))
         img.lockFocus()
         for (idx, r) in rows.enumerated() {
             let (label, pct) = r, yMid = yMids[idx]
+            // текст центрируем по cap-height (а не по рамке — иначе кажется выше);
+            // для сигнала — на оптический центр столбиков (они прижаты к низу)
+            let tMid = barShape == 2 ? yMid - barH * 0.14 : yMid
             if showLabel {
                 let la = NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: labelColor])
-                let lsz = la.size()
-                la.draw(at: NSPoint(x: labelW - lsz.width, y: yMid - lsz.height/2))
+                la.draw(at: NSPoint(x: labelW - la.size().width, y: tMid + labelFont.descender - labelFont.capHeight/2))
             }
             drawShape(barShape, NSRect(x: labelW + labelGap, y: yMid - barH/2, width: barW, height: barH),
                       CGFloat(pct / 100), dark: dark, mono: mono)
@@ -575,8 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     : (pct >= 95 ? NSColor(red: 1, green: 0.30, blue: 0.25, alpha: 1)
                        : (pct >= 80 ? NSColor(red: 1, green: 0.60, blue: 0.10, alpha: 1) : labelColor))
                 let na = NSAttributedString(string: "\(Int(pct.rounded()))%", attributes: [.font: numFont, .foregroundColor: col])
-                let nsz = na.size()
-                na.draw(at: NSPoint(x: W - nsz.width, y: yMid - nsz.height/2))
+                na.draw(at: NSPoint(x: W - na.size().width, y: tMid + numFont.descender - numFont.capHeight/2))
             }
         }
         img.unlockFocus()
@@ -611,7 +581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // форма шкалы
             let shapeMenu = NSMenu()
-            for (tag, t) in [(0, "Прямые"), (1, "Параллелограммы"), (2, "Сигнал"), (3, "Батарея")] {
+            for (tag, t) in [(0, "Прямые"), (1, "Параллелограммы"), (2, "Сигнал")] {
                 let it = NSMenuItem(title: t, action: #selector(setShape(_:)), keyEquivalent: "")
                 it.target = self; it.tag = tag; it.state = barShape == tag ? .on : .off
                 shapeMenu.addItem(it)
@@ -631,10 +601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             menu.addItem(NSMenuItem.separator())
 
-            // тумблеры: крупные иконки · монохром · подпись · проценты
-            let bigItem = NSMenuItem(title: "Крупные иконки", action: #selector(toggleBig), keyEquivalent: "")
-            bigItem.target = self; bigItem.state = bigIcons ? .on : .off
-            menu.addItem(bigItem)
+            // тумблеры: монохром · подпись · проценты
             let monoItem = NSMenuItem(title: "Монохром", action: #selector(toggleMono), keyEquivalent: "")
             monoItem.target = self; monoItem.state = colorMode == 1 ? .on : .off
             menu.addItem(monoItem)
@@ -668,11 +635,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func setRowMode(_ sender: NSMenuItem) {
         rowMode = sender.tag
         UserDefaults.standard.set(rowMode, forKey: "rowMode")
-        render()
-    }
-    @objc func toggleBig() {
-        bigIcons.toggle()
-        UserDefaults.standard.set(bigIcons, forKey: "bigIcons")
         render()
     }
     @objc func toggleMono() {
