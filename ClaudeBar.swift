@@ -150,7 +150,7 @@ func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
     let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
     let lit = litCount(frac, n)
     let minH = rect.height * 0.42
-    let yOff = rect.height * 0.14
+    let yOff = rect.height * 0.07
     for i in 0..<n {
         let h = minH + (rect.height - minH) * CGFloat(i) / CGFloat(n-1)
         let x = rect.minX + CGFloat(i)*(bw+gap)
@@ -173,7 +173,7 @@ func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
 func shapeHeight(_ shape: Int, single: Bool) -> CGFloat {
     if !single { return 6 }
     switch shape {
-    case 2: return 13     // сигнал — чуть крупнее
+    case 2: return 11     // сигнал (самый высокий столбик не должен «торчать» выше цифр)
     default: return 9     // сегменты
     }
 }
