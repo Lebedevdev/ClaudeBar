@@ -142,38 +142,52 @@ func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew:
     }
 }
 
-// Форма 2 (сигнал): 5 столбиков растущей высоты, как индикатор сети телефона.
+// Форма 2 (сигнал): 4 узких столбика растущей высоты, компактно — как сеть iPhone.
 func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
-    let n = 5, gap: CGFloat = 2.0
+    let n = 4, gap: CGFloat = 1.6
     let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
     let lit = litCount(frac, n)
-    let minH = rect.height * 0.34
+    let minH = rect.height * 0.42
     for i in 0..<n {
         let h = minH + (rect.height - minH) * CGFloat(i) / CGFloat(n-1)
         let x = rect.minX + CGFloat(i)*(bw+gap)
-        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: bw, height: h), xRadius: 1.2, yRadius: 1.2)
+        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: bw, height: h),
+                                xRadius: min(bw/2, 1.3), yRadius: min(bw/2, 1.3))
         (i < lit ? litColor(CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
         path.fill()
     }
 }
 
-// Форма 3 (батарея): корпус macOS-батарейки с носиком, заливка по доле (моя версия).
+// Форма 3 (батарея): пропорции menu-bar батарейки macOS (корпус + носик), заливка по доле.
 func drawBattery(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
-    let nubW = max(1.4, rect.height * 0.16)
-    let body = NSRect(x: rect.minX, y: rect.minY, width: rect.width - nubW - 1, height: rect.height)
-    let stroke = dark ? NSColor(white: 1, alpha: 0.55) : NSColor(white: 0, alpha: 0.45)
-    let outline = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
-    outline.lineWidth = 1
+    let nubW = max(1.2, rect.height * 0.22)
+    let body = NSRect(x: rect.minX, y: rect.minY, width: rect.width - nubW, height: rect.height)
+    let stroke = dark ? NSColor(white: 1, alpha: 0.6) : NSColor(white: 0, alpha: 0.5)
+    let outline = NSBezierPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5),
+                               xRadius: rect.height*0.3, yRadius: rect.height*0.3)
+    outline.lineWidth = max(1, rect.height*0.12)
     stroke.setStroke(); outline.stroke()
-    let nub = NSBezierPath(roundedRect: NSRect(x: body.maxX + 0.5, y: rect.minY + rect.height*0.3, width: nubW, height: rect.height*0.4),
-                           xRadius: nubW/2, yRadius: nubW/2)
+    let nubH = rect.height * 0.42
+    let nub = NSBezierPath(roundedRect: NSRect(x: body.maxX - 0.3, y: rect.minY + (rect.height-nubH)/2, width: nubW, height: nubH),
+                           xRadius: nubW*0.4, yRadius: nubW*0.4)
     stroke.setFill(); nub.fill()
-    let inset = body.insetBy(dx: 2, dy: 1.3)
+    let pad = rect.height * 0.22
+    let inner = body.insetBy(dx: pad, dy: pad)
     let f = max(0, min(1, frac))
-    let fw = f <= 0 ? 0 : max(inset.height * 0.4, inset.width * f)
-    let fill = NSBezierPath(roundedRect: NSRect(x: inset.minX, y: inset.minY, width: fw, height: inset.height), xRadius: 1, yRadius: 1)
+    let fw = f <= 0 ? 0 : max(inner.height, inner.width * f)      // мин. = квадратик
+    let fill = NSBezierPath(roundedRect: NSRect(x: inner.minX, y: inner.minY, width: fw, height: inner.height),
+                            xRadius: rect.height*0.14, yRadius: rect.height*0.14)
     (mono ? (dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)) : meterColor(f)).setFill()
     fill.fill()
+}
+
+// Естественная ширина шкалы под форму: сегменты широкие, сигнал/батарея компактные.
+func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
+    switch shape {
+    case 2: return 18          // сигнал — компактный кластер, как на iPhone
+    case 3: return h * 2.3     // батарея — пропорции macOS
+    default: return 58         // сегменты (10 блоков)
+    }
 }
 
 // Диспетчер формы шкалы.
@@ -429,7 +443,7 @@ if argv.count >= 3 && argv[1] == "--shapes" {
         let la = NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: txt])
         la.draw(at: NSPoint(x: pad, y: yMid - la.size().height/2))
         for (fi, frac) in fracs.enumerated() {
-            drawShape(shape, NSRect(x: pad + labelCol + CGFloat(fi)*cellW, y: yMid - 4.5, width: 58, height: 9),
+            drawShape(shape, NSRect(x: pad + labelCol + CGFloat(fi)*cellW, y: yMid - 4.5, width: shapeWidth(shape, 9), height: 9),
                       frac, dark: dark, mono: false)
         }
     }
@@ -521,12 +535,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let numFont = NSFont.monospacedDigitSystemFont(ofSize: single ? 9.5 : 8, weight: .medium)
         let labelW: CGFloat = showLabel ? 15 : 0
         let labelGap: CGFloat = showLabel ? 4 : 0
-        let barW: CGFloat = 58
+        let H: CGFloat = 18
+        let barH: CGFloat = single ? 9 : 6
+        let barW: CGFloat = shapeWidth(barShape, barH)
         let numGap: CGFloat = showPercent ? 4 : 0
         let numW: CGFloat = showPercent ? 25 : 0
         let W = ceil(labelW + labelGap + barW + numGap + numW)
-        let H: CGFloat = 18
-        let barH: CGFloat = single ? 9 : 6
         let yMids: [CGFloat] = single ? [9] : [13, 5]
 
         let img = NSImage(size: NSSize(width: max(W, 12), height: H))
