@@ -173,7 +173,7 @@ func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
 func shapeHeight(_ shape: Int, single: Bool) -> CGFloat {
     if !single { return 6 }
     switch shape {
-    case 2: return 14     // сигнал (картинка под него поднимается до 20px)
+    case 2: return 13     // сигнал (картинка под него поднимается до 20px)
     default: return 9     // сегменты
     }
 }
