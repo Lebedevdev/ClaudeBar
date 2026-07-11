@@ -164,7 +164,8 @@ func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
 // Естественная ширина шкалы под форму: сегменты широкие, сигнал компактный.
 func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
     switch shape {
-    case 2: return h * 1.5           // сигнал — узкие высокие столбики, как на iPhone
+    case 2: return max(16, h * 1.5)  // сигнал — узкие высокие столбики; пол 16px, чтобы
+                                     // в две строки (h=6) столбики не выродились в 1px
     default: return 58               // сегменты (10 блоков)
     }
 }
@@ -453,7 +454,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var usage = Usage()
     var lastFetch: Date?
-    // форма шкалы: 0 прямые · 1 параллелограммы · 2 сигнал · 3 батарея
+    // форма шкалы: 0 прямые · 1 параллелограммы · 2 сигнал
     var barShape: Int = {
         let d = UserDefaults.standard
         return d.object(forKey: "barShape") == nil ? 1 : d.integer(forKey: "barShape")
@@ -509,7 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Рисуем сегментные шкалы (5ч/7д) блоками; строки и проценты — по настройкам.
+    // Рисуем шкалы (5ч/7д) выбранной формой; строки и проценты — по настройкам.
     func renderMenuImage(dark: Bool) -> NSImage {
         var rows: [(String, Double)] = []
         if rowMode != 2 { rows.append(("5ч", usage.fiveHourPct ?? 0)) }
