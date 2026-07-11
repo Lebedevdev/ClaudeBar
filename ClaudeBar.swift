@@ -164,7 +164,7 @@ func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
 // Естественная ширина шкалы под форму: сегменты широкие, сигнал компактный.
 func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
     switch shape {
-    case 2: return max(16, h * 1.4)  // сигнал — компактный кластер, как на iPhone
+    case 2: return h * 2.0           // сигнал — толстые столбики, как на iPhone
     default: return 58               // сегменты (10 блоков)
     }
 }
@@ -173,7 +173,7 @@ func shapeWidth(_ shape: Int, _ h: CGFloat) -> CGFloat {
 func shapeHeight(_ shape: Int, single: Bool) -> CGFloat {
     if !single { return 6 }
     switch shape {
-    case 2: return 11     // сигнал (самый высокий столбик не должен «торчать» выше цифр)
+    case 2: return 12     // сигнал (крупнее, но верхний столбик не «торчит» над цифрами)
     default: return 9     // сегменты
     }
 }
