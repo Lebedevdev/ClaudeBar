@@ -143,15 +143,18 @@ func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew:
 }
 
 // Форма 2 (сигнал): 4 узких столбика растущей высоты, компактно — как сеть iPhone.
+// Кластер приподнят на yOff, чтобы его оптический центр был по середине строки
+// (столбики прижаты к низу → без сдвига «висели» бы низко относительно текста).
 func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
     let n = 4, gap: CGFloat = 1.6
     let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
     let lit = litCount(frac, n)
     let minH = rect.height * 0.42
+    let yOff = rect.height * 0.14
     for i in 0..<n {
         let h = minH + (rect.height - minH) * CGFloat(i) / CGFloat(n-1)
         let x = rect.minX + CGFloat(i)*(bw+gap)
-        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: bw, height: h),
+        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY + yOff, width: bw, height: h),
                                 xRadius: min(bw/2, 1.3), yRadius: min(bw/2, 1.3))
         (i < lit ? litColor(CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
         path.fill()
@@ -532,9 +535,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         img.lockFocus()
         for (idx, r) in rows.enumerated() {
             let (label, pct) = r, yMid = yMids[idx]
-            // текст центрируем по cap-height (а не по рамке — иначе кажется выше);
-            // для сигнала — на оптический центр столбиков (они прижаты к низу)
-            let tMid = barShape == 2 ? yMid - barH * 0.14 : yMid
+            // текст центрируем по cap-height (а не по рамке — иначе кажется выше).
+            // Сам сигнал приподнят внутри drawSignal, так что центр всех форм = yMid.
+            let tMid = yMid
             if showLabel {
                 let la = NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: labelColor])
                 la.draw(at: NSPoint(x: labelW - la.size().width, y: tMid + labelFont.descender - labelFont.capHeight/2))
