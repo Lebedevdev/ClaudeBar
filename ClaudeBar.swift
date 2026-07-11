@@ -106,19 +106,27 @@ func meterColor(_ f: CGFloat) -> NSColor {
                    blue: mix(l.blueComponent, h.blueComponent), alpha: 1)
 }
 
-// Полоска-«пилюля»: тусклый трек + заливка по доле (мин. кружок, чтобы 0% был виден).
-func drawMeter(_ rect: NSRect, _ frac: CGFloat, dark: Bool) {
-    let r = rect.height / 2
-    let track = NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r)
-    (dark ? NSColor(white: 1, alpha: 0.22) : NSColor(white: 0, alpha: 0.16)).setFill()
-    track.fill()
+// Сегментная шкала блоками (стиль ▰▱▱▱ как в терминале). 10 блоков = ~10% каждый.
+// mono=true — все зажжённые блоки белые/тёмные (без цвета).
+func drawBlocks(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
+    let n = 10
+    let gap: CGFloat = 1.4
+    let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
     let f = max(0, min(1, frac))
-    NSGraphicsContext.saveGraphicsState()
-    NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).setClip()
-    let w = f <= 0 ? 0 : max(rect.height, rect.width * f)
-    meterColor(f).setFill()
-    NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: w, height: rect.height)).fill()
-    NSGraphicsContext.restoreGraphicsState()
+    let lit = f <= 0 ? 0 : max(1, Int((f * CGFloat(n)).rounded()))   // >0% → хотя бы один блок
+    let empty = dark ? NSColor(white: 1, alpha: 0.20) : NSColor(white: 0, alpha: 0.15)
+    let monoOn = dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)
+    for i in 0..<n {
+        let x = rect.minX + CGFloat(i)*(bw+gap)
+        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: bw, height: rect.height),
+                                xRadius: 0.8, yRadius: 0.8)   // почти квадрат
+        if i < lit {
+            (mono ? monoOn : meterColor(CGFloat(i)/CGFloat(n-1))).setFill()
+        } else {
+            empty.setFill()
+        }
+        path.fill()
+    }
 }
 
 // ============================================================================
@@ -356,11 +364,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var usage = Usage()
     var lastFetch: Date?
-    // вид в баре: 0 только цифры · 1 только шкалы · 2 шкалы и цифры
-    var displayStyle: Int = {
+    // какие окна в баре: 0 обе (5ч+7д) · 1 только 5ч · 2 только 7д
+    var rowMode = UserDefaults.standard.integer(forKey: "rowMode")
+    // показывать проценты рядом со шкалой
+    var showPercent: Bool = {
         let d = UserDefaults.standard
-        return d.object(forKey: "displayStyle") == nil ? 2 : d.integer(forKey: "displayStyle")
+        return d.object(forKey: "showPercent") == nil ? true : d.bool(forKey: "showPercent")
     }()
+    // цвет шкалы: 0 цветной (green→red) · 1 монохром (белый)
+    var colorMode = UserDefaults.standard.integer(forKey: "colorMode")
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -405,36 +417,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return String(repeating: "\u{2007}", count: max(0, 3 - s.count)) + s + "%"
     }
 
-    // Рисуем две мини-шкалы (5ч/7д) как индикатор батареи; style 2 — ещё и проценты.
+    // Рисуем сегментные шкалы (5ч/7д) блоками; строки и проценты — по настройкам.
     func renderMenuImage(dark: Bool) -> NSImage {
-        let withNums = displayStyle == 2
-        let f5 = usage.fiveHourPct ?? 0, f7 = usage.sevenDayPct ?? 0
+        var rows: [(String, Double)] = []
+        if rowMode != 2 { rows.append(("5ч", usage.fiveHourPct ?? 0)) }
+        if rowMode != 1 { rows.append(("7д", usage.sevenDayPct ?? 0)) }
+        if rows.isEmpty { rows.append(("5ч", usage.fiveHourPct ?? 0)) }
+        let single = rows.count == 1
+        let mono = colorMode == 1
+
         let labelColor = dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.15, alpha: 1)
-        let labelFont = NSFont.systemFont(ofSize: 7.5, weight: .semibold)
-        let numFont = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
-        let labelW: CGFloat = 14, gap: CGFloat = 3, meterW: CGFloat = 26, meterH: CGFloat = 5
-        let numW: CGFloat = withNums ? 26 : 0
-        let W = ceil(labelW + gap + meterW + (withNums ? gap + numW : 0))
+        let labelFont = NSFont.systemFont(ofSize: single ? 9 : 7.5, weight: .semibold)
+        let numFont = NSFont.monospacedDigitSystemFont(ofSize: single ? 9.5 : 8, weight: .medium)
+        let labelW: CGFloat = 15, gap: CGFloat = 4, barW: CGFloat = 52
+        let numW: CGFloat = showPercent ? 25 : 0
+        let W = ceil(labelW + gap + barW + (showPercent ? 4 + numW : 0))
         let H: CGFloat = 18
+        let blockH: CGFloat = single ? 7 : 5
+        let yMids: [CGFloat] = single ? [9] : [13.5, 4.5]
 
         let img = NSImage(size: NSSize(width: W, height: H))
         img.lockFocus()
-        func row(_ label: String, _ pct: Double, _ yMid: CGFloat) {
+        for (idx, r) in rows.enumerated() {
+            let (label, pct) = r, yMid = yMids[idx]
             let la = NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: labelColor])
             let lsz = la.size()
             la.draw(at: NSPoint(x: labelW - lsz.width, y: yMid - lsz.height/2))
-            drawMeter(NSRect(x: labelW + gap, y: yMid - meterH/2, width: meterW, height: meterH),
-                      CGFloat(pct / 100), dark: dark)
-            if withNums {
-                let col: NSColor = pct >= 95 ? NSColor(red: 1, green: 0.30, blue: 0.25, alpha: 1)
-                    : (pct >= 80 ? NSColor(red: 1, green: 0.60, blue: 0.10, alpha: 1) : labelColor)
+            drawBlocks(NSRect(x: labelW + gap, y: yMid - blockH/2, width: barW, height: blockH),
+                       CGFloat(pct / 100), dark: dark, mono: mono)
+            if showPercent {
+                let col: NSColor = mono ? labelColor
+                    : (pct >= 95 ? NSColor(red: 1, green: 0.30, blue: 0.25, alpha: 1)
+                       : (pct >= 80 ? NSColor(red: 1, green: 0.60, blue: 0.10, alpha: 1) : labelColor))
                 let na = NSAttributedString(string: "\(Int(pct.rounded()))%", attributes: [.font: numFont, .foregroundColor: col])
                 let nsz = na.size()
                 na.draw(at: NSPoint(x: W - nsz.width, y: yMid - nsz.height/2))
             }
         }
-        row("5ч", f5, 13.5)
-        row("7д", f7, 4.5)
         img.unlockFocus()
         img.isTemplate = false
         return img
@@ -446,7 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.length = NSStatusItem.variableLength
         let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua
 
-        // нет данных — всегда текст
+        // нет данных — текст
         if !usage.ok {
             btn.image = nil
             let t = usage.error != nil ? "Claude ⚠" : "Claude…"
@@ -455,21 +474,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .foregroundColor: NSColor.secondaryLabelColor])
             return
         }
-
-        if displayStyle == 0 {   // только цифры
-            btn.image = nil
-            let f = usage.fiveHourPct ?? 0, s = usage.sevenDayPct ?? 0
-            let binding = max(f, s)
-            let color: NSColor = binding >= 95 ? .systemRed : (binding >= 80 ? .systemOrange : .labelColor)
-            btn.attributedTitle = NSAttributedString(
-                string: "5ч " + pctFixed(f) + "  7д " + pctFixed(s),
-                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                             .foregroundColor: color])
-        } else {                 // шкалы (+ цифры)
-            btn.attributedTitle = NSAttributedString(string: "")
-            btn.image = renderMenuImage(dark: dark)
-            btn.imagePosition = .imageOnly
-        }
+        btn.attributedTitle = NSAttributedString(string: "")
+        btn.image = renderMenuImage(dark: dark)
+        btn.imagePosition = .imageOnly
     }
 
     @objc func click() {
@@ -477,14 +484,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if event.type == .rightMouseUp {
             let menu = NSMenu()
 
-            let styleMenu = NSMenu()
-            for (tag, t) in [(2, "Шкалы и цифры"), (1, "Только шкалы"), (0, "Только цифры")] {
-                let it = NSMenuItem(title: t, action: #selector(setStyle(_:)), keyEquivalent: "")
-                it.target = self; it.tag = tag; it.state = displayStyle == tag ? .on : .off
-                styleMenu.addItem(it)
+            // какие окна показывать
+            let rowMenu = NSMenu()
+            for (tag, t) in [(0, "5ч и 7д"), (1, "Только 5ч"), (2, "Только 7д")] {
+                let it = NSMenuItem(title: t, action: #selector(setRowMode(_:)), keyEquivalent: "")
+                it.target = self; it.tag = tag; it.state = rowMode == tag ? .on : .off
+                rowMenu.addItem(it)
             }
-            let styleItem = NSMenuItem(title: "Вид в баре", action: nil, keyEquivalent: "")
-            menu.addItem(styleItem); menu.setSubmenu(styleMenu, for: styleItem)
+            let rowItem = NSMenuItem(title: "Показывать", action: nil, keyEquivalent: "")
+            menu.addItem(rowItem); menu.setSubmenu(rowMenu, for: rowItem)
+
+            // цвет шкалы
+            let colorMenu = NSMenu()
+            for (tag, t) in [(0, "Цветной"), (1, "Монохром (белый)")] {
+                let it = NSMenuItem(title: t, action: #selector(setColorMode(_:)), keyEquivalent: "")
+                it.target = self; it.tag = tag; it.state = colorMode == tag ? .on : .off
+                colorMenu.addItem(it)
+            }
+            let colorItem = NSMenuItem(title: "Цвет шкалы", action: nil, keyEquivalent: "")
+            menu.addItem(colorItem); menu.setSubmenu(colorMenu, for: colorItem)
+
+            // проценты вкл/выкл
+            let pctItem = NSMenuItem(title: "Показывать проценты", action: #selector(togglePercent), keyEquivalent: "")
+            pctItem.target = self; pctItem.state = showPercent ? .on : .off
+            menu.addItem(pctItem)
 
             let upd = NSMenuItem(title: "Обновить сейчас", action: #selector(manualRefresh), keyEquivalent: "r")
             upd.target = self; menu.addItem(upd)
@@ -501,9 +524,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func setStyle(_ sender: NSMenuItem) {
-        displayStyle = sender.tag
-        UserDefaults.standard.set(displayStyle, forKey: "displayStyle")
+    @objc func setRowMode(_ sender: NSMenuItem) {
+        rowMode = sender.tag
+        UserDefaults.standard.set(rowMode, forKey: "rowMode")
+        render()
+    }
+    @objc func setColorMode(_ sender: NSMenuItem) {
+        colorMode = sender.tag
+        UserDefaults.standard.set(colorMode, forKey: "colorMode")
+        render()
+    }
+    @objc func togglePercent() {
+        showPercent.toggle()
+        UserDefaults.standard.set(showPercent, forKey: "showPercent")
         render()
     }
     @objc func manualRefresh() { refresh(force: true) }
