@@ -106,20 +106,26 @@ func meterColor(_ f: CGFloat) -> NSColor {
                    blue: mix(l.blueComponent, h.blueComponent), alpha: 1)
 }
 
-// Сегментная шкала блоками (стиль ▰▱▱▱ как в терминале). 10 блоков = ~10% каждый.
-// mono=true — все зажжённые блоки белые/тёмные (без цвета).
+// Сегментная шкала параллелограммами (стиль ▰▱▱▱ — со скосом, как в терминале).
+// 10 блоков = ~10% каждый. mono=true — зажжённые блоки белые/тёмные (без цвета).
 func drawBlocks(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
     let n = 10
     let gap: CGFloat = 1.4
     let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
+    let skew = min(rect.height * 0.34, 1.9)             // наклон верхней грани вправо
     let f = max(0, min(1, frac))
     let lit = f <= 0 ? 0 : max(1, Int((f * CGFloat(n)).rounded()))   // >0% → хотя бы один блок
     let empty = dark ? NSColor(white: 1, alpha: 0.20) : NSColor(white: 0, alpha: 0.15)
     let monoOn = dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1)
+    let y0 = rect.minY, y1 = rect.maxY
     for i in 0..<n {
         let x = rect.minX + CGFloat(i)*(bw+gap)
-        let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY, width: bw, height: rect.height),
-                                xRadius: 0.8, yRadius: 0.8)   // почти квадрат
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: x, y: y0))                  // низ-лево
+        path.line(to: NSPoint(x: x + bw - skew, y: y0))      // низ-право
+        path.line(to: NSPoint(x: x + bw, y: y1))             // верх-право
+        path.line(to: NSPoint(x: x + skew, y: y1))           // верх-лево
+        path.close()
         if i < lit {
             (mono ? monoOn : meterColor(CGFloat(i)/CGFloat(n-1))).setFill()
         } else {
@@ -429,7 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let labelColor = dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.15, alpha: 1)
         let labelFont = NSFont.systemFont(ofSize: single ? 9 : 7.5, weight: .semibold)
         let numFont = NSFont.monospacedDigitSystemFont(ofSize: single ? 9.5 : 8, weight: .medium)
-        let labelW: CGFloat = 15, gap: CGFloat = 4, barW: CGFloat = 52
+        let labelW: CGFloat = 15, gap: CGFloat = 4, barW: CGFloat = 58
         let numW: CGFloat = showPercent ? 25 : 0
         let W = ceil(labelW + gap + barW + (showPercent ? 4 + numW : 0))
         let H: CGFloat = 18
