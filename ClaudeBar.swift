@@ -107,7 +107,8 @@ func meterColor(_ f: CGFloat) -> NSColor {
 }
 
 // --- Формы шкалы для менюбара ---
-// Цвет зажжённого сегмента (по позиции, green→red) / монохром / пустой.
+// Цвет зажжённой части по УРОВНЮ ОСТАТКА (вся горящая часть одним цветом, как заряд
+// батареи): много осталось → зелёный, мало → красный. Вызывающий передаёт pos = 1-frac.
 func litColor(_ pos: CGFloat, mono: Bool, dark: Bool) -> NSColor {
     if mono { return dark ? NSColor(white: 0.95, alpha: 1) : NSColor(white: 0.20, alpha: 1) }
     return meterColor(pos)
@@ -119,7 +120,7 @@ func litCount(_ frac: CGFloat, _ n: Int) -> Int {
 }
 
 // Форма 0 (прямые) / 1 (параллелограммы): 10 сегментов, skew задаёт наклон.
-func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew: CGFloat) {
+func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew: CGFloat, remaining: Bool) {
     let n = 10, gap: CGFloat = 1.4
     let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
     let lit = litCount(frac, n)
@@ -137,7 +138,8 @@ func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew:
             path.line(to: NSPoint(x: x + skew, y: y1))
             path.close()
         }
-        (i < lit ? litColor(CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
+        // остаток → единый цвет по уровню (1-frac); расход → позиционный градиент (как раньше)
+        (i < lit ? litColor(remaining ? 1 - frac : CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
         path.fill()
     }
 }
@@ -145,7 +147,7 @@ func drawSegments(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, skew:
 // Форма 2 (сигнал): 4 узких столбика растущей высоты, компактно — как сеть iPhone.
 // Кластер приподнят на yOff, чтобы его оптический центр был по середине строки
 // (столбики прижаты к низу → без сдвига «висели» бы низко относительно текста).
-func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
+func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, remaining: Bool) {
     let n = 4, gap: CGFloat = 1.6
     let bw = (rect.width - CGFloat(n-1)*gap) / CGFloat(n)
     let lit = litCount(frac, n)
@@ -156,7 +158,8 @@ func drawSignal(_ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
         let x = rect.minX + CGFloat(i)*(bw+gap)
         let path = NSBezierPath(roundedRect: NSRect(x: x, y: rect.minY + yOff, width: bw, height: h),
                                 xRadius: min(bw/2, 1.3), yRadius: min(bw/2, 1.3))
-        (i < lit ? litColor(CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
+        // остаток → единый цвет по уровню (1-frac); расход → позиционный градиент (как раньше)
+        (i < lit ? litColor(remaining ? 1 - frac : CGFloat(i)/CGFloat(n-1), mono: mono, dark: dark) : dimColor(dark: dark)).setFill()
         path.fill()
     }
 }
@@ -180,11 +183,11 @@ func shapeHeight(_ shape: Int, single: Bool) -> CGFloat {
 }
 
 // Диспетчер формы шкалы.
-func drawShape(_ shape: Int, _ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool) {
+func drawShape(_ shape: Int, _ rect: NSRect, _ frac: CGFloat, dark: Bool, mono: Bool, remaining: Bool = true) {
     switch shape {
-    case 0: drawSegments(rect, frac, dark: dark, mono: mono, skew: 0)
-    case 2: drawSignal(rect, frac, dark: dark, mono: mono)
-    default: drawSegments(rect, frac, dark: dark, mono: mono, skew: min(rect.height * 0.34, 1.9))
+    case 0: drawSegments(rect, frac, dark: dark, mono: mono, skew: 0, remaining: remaining)
+    case 2: drawSignal(rect, frac, dark: dark, mono: mono, remaining: remaining)
+    default: drawSegments(rect, frac, dark: dark, mono: mono, skew: min(rect.height * 0.34, 1.9), remaining: remaining)
     }
 }
 
@@ -305,11 +308,12 @@ func fetchUsage(_ completion: @escaping (Usage) -> Void) {
 // ============================================================================
 final class PanelView: NSView {
     var usage = Usage()
+    var showRemaining = true          // true — остаток лимита, false — расход
     override var isFlipped: Bool { true }
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 
     // LED-шкала с красной стрелкой (фирменный стиль семейства)
-    private func ledBar(_ ctx: CGContext, _ bar: CGRect, frac: CGFloat, _ pal: Palette) {
+    private func ledBar(_ ctx: CGContext, _ bar: CGRect, frac: CGFloat, _ pal: Palette, remaining: Bool) {
         let n = 40, gap: CGFloat = 2
         let segW = (bar.width - CGFloat(n-1)*gap) / CGFloat(n)
         let f = max(0, min(1, frac))
@@ -319,7 +323,7 @@ final class PanelView: NSView {
             let seg = CGRect(x: x, y: bar.minY, width: segW, height: bar.height)
             let rr = CGPath(roundedRect: seg, cornerWidth: min(segW/2, 1.5), cornerHeight: min(segW/2, 1.5), transform: nil)
             if i < lit {
-                let col = segColor(CGFloat(i)/CGFloat(n-1), pal)
+                let col = segColor(remaining ? 1 - f : CGFloat(i)/CGFloat(n-1), pal)   // остаток: уровень; расход: позиция
                 ctx.saveGState()
                 ctx.setShadow(offset: .zero, blur: pal.glowBlur, color: col.withAlphaComponent(pal.glowAlpha).cgColor)
                 ctx.addPath(rr); ctx.setFillColor(col.cgColor); ctx.fillPath()
@@ -340,10 +344,11 @@ final class PanelView: NSView {
     // Один блок лимита: подпись, процент, LED-шкала, строка сброса.
     private func drawLimit(_ ctx: CGContext, _ title: String, _ pct: Double?, _ reset: Date?,
                            _ y: CGFloat, _ pal: Palette, _ W: CGFloat, _ pad: CGFloat) {
-        let p = pct ?? 0
+        let use = pct ?? 0
+        let shown = showRemaining ? 100 - use : use   // остаток или расход — по настройке
         drawText(title, pad, y + 4, 12, .medium, pal.rowText)
-        drawText("\(Int(p.rounded()))%", W - pad, y, 16, .bold, warnColor(p, base: pal.title, pal), right: true, mono: true)
-        ledBar(ctx, CGRect(x: pad, y: y + 24, width: W - 2*pad, height: 14), frac: CGFloat(p / 100), pal)
+        drawText("\(Int(shown.rounded()))%", W - pad, y, 16, .bold, warnColor(use, base: pal.title, pal), right: true, mono: true)
+        ledBar(ctx, CGRect(x: pad, y: y + 24, width: W - 2*pad, height: 14), frac: CGFloat(shown / 100), pal, remaining: showRemaining)
         if let r = reset {
             drawText("сброс " + untilText(r), pad, y + 44, 9, .medium, pal.dim)
             drawText(absText(r), W - pad, y + 44, 9, .medium, pal.dim, right: true)
@@ -383,7 +388,7 @@ final class PanelView: NSView {
         if let sp = usage.scopedPct {
             let lbl = usage.scopedLabel.map { "Неделя · \($0)" } ?? "Неделя · модель"
             drawText(lbl, pad, 173, 11, .medium, pal.rowText)
-            drawText("\(Int(sp.rounded()))%", W - pad, 172, 11, .semibold, warnColor(sp, base: pal.rowValue, pal), right: true, mono: true)
+            drawText("\(Int((showRemaining ? 100 - sp : sp).rounded()))%", W - pad, 172, 11, .semibold, warnColor(sp, base: pal.rowValue, pal), right: true, mono: true)
         } else if let at = usage.fetchedAt {
             drawText("обновлено", pad, 174, 10, .medium, pal.dim)
             drawText(hmText(at), W - pad, 174, 10, .medium, pal.dim, right: true)
@@ -392,13 +397,14 @@ final class PanelView: NSView {
 }
 
 // ============================================================================
-//  Режим превью: ClaudeBar --panel out.png [light|dark]
+//  Режим превью: ClaudeBar --panel out.png [light|dark] [spent]
 // ============================================================================
 let argv = CommandLine.arguments
 if argv.count >= 3 && argv[1] == "--panel" {
     let light = argv.contains("light")
     let v = PanelView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
     v.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
+    v.showRemaining = !argv.contains("spent")   // spent → режим расхода для проверки
     var u = Usage()
     u.fiveHourPct = 62; u.fiveHourReset = Date().addingTimeInterval(2*3600 + 14*60)
     u.sevenDayPct = 35; u.sevenDayReset = Date().addingTimeInterval(2*86400 + 4*3600)
@@ -472,6 +478,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let d = UserDefaults.standard
         return d.object(forKey: "showPercent") == nil ? true : d.bool(forKey: "showPercent")
     }()
+    // семантика значений: true — ОСТАТОК лимита (по умолчанию), false — расход
+    var showRemaining: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "showRemaining") == nil ? true : d.bool(forKey: "showRemaining")
+    }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -544,13 +555,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let la = NSAttributedString(string: label, attributes: [.font: labelFont, .foregroundColor: labelColor])
                 la.draw(at: NSPoint(x: labelW - la.size().width, y: tMid + labelFont.descender - labelFont.capHeight/2))
             }
+            let shownPct = showRemaining ? 100 - pct : pct   // остаток или расход — по настройке
             drawShape(barShape, NSRect(x: labelW + labelGap, y: yMid - barH/2, width: barW, height: barH),
-                      CGFloat(pct / 100), dark: dark, mono: mono)
+                      CGFloat(shownPct / 100), dark: dark, mono: mono, remaining: showRemaining)
             if showPercent {
+                // цвет-тревога считается по РАСХОДУ (pct) в обоих режимах
                 let col: NSColor = mono ? labelColor
                     : (pct >= 95 ? NSColor(red: 1, green: 0.30, blue: 0.25, alpha: 1)
                        : (pct >= 80 ? NSColor(red: 1, green: 0.60, blue: 0.10, alpha: 1) : labelColor))
-                let na = NSAttributedString(string: "\(Int(pct.rounded()))%", attributes: [.font: numFont, .foregroundColor: col])
+                let na = NSAttributedString(string: "\(Int(shownPct.rounded()))%", attributes: [.font: numFont, .foregroundColor: col])
                 na.draw(at: NSPoint(x: W - na.size().width, y: tMid + numFont.descender - numFont.capHeight/2))
             }
         }
@@ -560,7 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func render() {
-        panel.usage = usage; panel.needsDisplay = true
+        panel.usage = usage; panel.showRemaining = showRemaining; panel.needsDisplay = true
         guard let btn = statusItem.button else { return }
         statusItem.length = NSStatusItem.variableLength
         let dark = btn.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua
@@ -606,7 +619,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             menu.addItem(NSMenuItem.separator())
 
-            // тумблеры: монохром · подпись · проценты
+            // тумблеры: остаток/расход · монохром · подпись · проценты
+            let remItem = NSMenuItem(title: "Показывать остаток", action: #selector(toggleRemaining), keyEquivalent: "")
+            remItem.target = self; remItem.state = showRemaining ? .on : .off
+            menu.addItem(remItem)
             let monoItem = NSMenuItem(title: "Монохром", action: #selector(toggleMono), keyEquivalent: "")
             monoItem.target = self; monoItem.state = colorMode == 1 ? .on : .off
             menu.addItem(monoItem)
@@ -655,6 +671,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func togglePercent() {
         showPercent.toggle()
         UserDefaults.standard.set(showPercent, forKey: "showPercent")
+        render()
+    }
+    @objc func toggleRemaining() {
+        showRemaining.toggle()
+        UserDefaults.standard.set(showRemaining, forKey: "showRemaining")
         render()
     }
     @objc func manualRefresh() { refresh(force: true) }
