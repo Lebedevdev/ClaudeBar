@@ -252,7 +252,9 @@ struct SessionInfo {
     let id: String       // uuid сессии (имя файла без .jsonl)
     let name: String     // ai-title либо имя папки проекта
     let cwd: String      // рабочая папка сессии ("" если не нашли)
-    let mtime: Date      // последняя активность
+    let created: Date    // когда сессия создана (birth time файла)
+    let mtime: Date      // последняя активность (для сортировки)
+    var isLive: Bool = false   // транскрипт сейчас открыт живым процессом claude
     var resumeCommand: String {
         cwd.isEmpty ? "claude --resume \(id)" : "cd '\(cwd)' && claude --resume \(id)"
     }
@@ -281,7 +283,7 @@ func extractJSONString(_ data: Data, key: String, backwards: Bool) -> String? {
 // Кэш разбора: транскрипт живой сессии меняется постоянно, но старые — нет.
 var sessionParseCache: [String: (mtime: Date, info: SessionInfo)] = [:]
 
-func parseSession(_ path: String, mtime: Date) -> SessionInfo? {
+func parseSession(_ path: String, created: Date, mtime: Date) -> SessionInfo? {
     if let c = sessionParseCache[path], c.mtime == mtime { return c.info }
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .alwaysMapped) else { return nil }
     let id = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
@@ -290,15 +292,19 @@ func parseSession(_ path: String, mtime: Date) -> SessionInfo? {
     if name == nil || name!.isEmpty {
         name = cwd.isEmpty ? "Сессия " + id.prefix(8) : (cwd as NSString).lastPathComponent
     }
-    let info = SessionInfo(id: id, name: name!, cwd: cwd, mtime: mtime)
+    let info = SessionInfo(id: id, name: name!, cwd: cwd, created: created, mtime: mtime)
     sessionParseCache[path] = (mtime, info)
     return info
 }
 
+// Сессия «активна», если транскрипт обновлялся только что: живой claude пишет
+// в него постоянно. (lsof не годится — файл не держат открытым, append+close.)
+let LIVE_WINDOW: TimeInterval = 120
+
 func scanSessions(limit: Int = 4) -> [SessionInfo] {
     let fm = FileManager.default
     let root = NSHomeDirectory() + "/.claude/projects"
-    var files: [(path: String, mtime: Date)] = []
+    var files: [(path: String, created: Date, mtime: Date)] = []
     for proj in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
         let dir = root + "/" + proj
         for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where f.hasSuffix(".jsonl") {
@@ -306,14 +312,17 @@ func scanSessions(limit: Int = 4) -> [SessionInfo] {
             guard let a = try? fm.attributesOfItem(atPath: p),
                   let mt = a[.modificationDate] as? Date,
                   let sz = a[.size] as? Int, sz > 2048 else { continue }   // пустые форки-заглушки мимо
-            files.append((p, mt))
+            files.append((p, (a[.creationDate] as? Date) ?? mt, mt))
         }
     }
     files.sort { $0.mtime > $1.mtime }
     var out: [SessionInfo] = []
     for f in files.prefix(16) {
         if out.count >= limit { break }
-        if let s = parseSession(f.path, mtime: f.mtime) { out.append(s) }
+        if var s = parseSession(f.path, created: f.created, mtime: f.mtime) {
+            s.isLive = -f.mtime.timeIntervalSinceNow < LIVE_WINDOW
+            out.append(s)
+        }
     }
     return out
 }
@@ -396,7 +405,10 @@ final class PanelView: NSView {
     var usage = Usage()
     var showRemaining = true          // true — остаток лимита, false — расход
     var sessions: [SessionInfo] = []  // последние сессии Claude Code (клик → resume-команда в буфер)
+    var sessionsOpen = true           // секция раскрыта (клик по заголовку сворачивает)
+    var onToggleSessions: (() -> Void)?
     private var rowRects: [NSRect] = []   // хитбоксы строк сессий (координаты flipped)
+    private var headerRect = NSRect.zero  // хитбокс заголовка «СЕССИИ» (клик = свернуть/раскрыть)
     private var hoverIdx: Int? = nil
     private var copiedIdx: Int? = nil     // строка с бейджем «✓ скопировано»
     private var copiedTimer: Timer?
@@ -412,18 +424,20 @@ final class PanelView: NSView {
     }
     private func rowIndex(at p: NSPoint) -> Int? { rowRects.firstIndex { $0.contains(p) } }
     override func mouseMoved(with e: NSEvent) {
-        let idx = rowIndex(at: convert(e.locationInWindow, from: nil))
+        let p = convert(e.locationInWindow, from: nil)
+        let idx = rowIndex(at: p)
         if idx != hoverIdx { hoverIdx = idx; needsDisplay = true }
-        NSCursor.pointingHand.set()
-        if idx == nil { NSCursor.arrow.set() }
+        if idx != nil || headerRect.contains(p) { NSCursor.pointingHand.set() }
+        else { NSCursor.arrow.set() }
     }
     override func mouseExited(with e: NSEvent) {
         if hoverIdx != nil { hoverIdx = nil; needsDisplay = true }
         NSCursor.arrow.set()
     }
     override func mouseDown(with e: NSEvent) {
-        guard let idx = rowIndex(at: convert(e.locationInWindow, from: nil)),
-              idx < sessions.count else { return }
+        let p = convert(e.locationInWindow, from: nil)
+        if headerRect.contains(p) { onToggleSessions?(); return }
+        guard let idx = rowIndex(at: p), idx < sessions.count else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(sessions[idx].resumeCommand, forType: .string)
@@ -528,13 +542,16 @@ final class PanelView: NSView {
         drawSessions(ctx, pal, W, pad)
     }
 
-    // --- Секция «Сессии»: последние транскрипты, клик копирует resume-команду ---
+    // --- Секция «Сессии»: последние транскрипты, клик копирует resume-команду.
+    //     Клик по заголовку сворачивает/раскрывает секцию. ---
     private func drawSessions(_ ctx: CGContext, _ pal: Palette, _ W: CGFloat, _ pad: CGFloat) {
         rowRects = []
         ctx.setFillColor(pal.separator.cgColor)
         ctx.fill(CGRect(x: pad, y: 196, width: W - 2*pad, height: 1))
 
-        drawText("СЕССИИ", pad, 206, 9, .semibold, pal.dim)
+        drawText(sessionsOpen ? "СЕССИИ ▾" : "СЕССИИ ▸", pad, 206, 9, .semibold, pal.dim)
+        headerRect = NSRect(x: 0, y: 197, width: W, height: 24)
+        guard sessionsOpen else { return }
         drawText("клик → команда в буфер", W - pad, 206, 9, .regular, pal.dim, right: true)
 
         if sessions.isEmpty {
@@ -556,9 +573,10 @@ final class PanelView: NSView {
                 ctx.fillPath()
             }
 
-            // справа: время либо бейдж «скопировано»
-            let right = copiedIdx == i ? "✓ скопировано" : agoText(s.mtime)
-            let rightCol = copiedIdx == i ? pal.green : pal.dim
+            // справа: «✓ скопировано» > «● активна» (сессия открыта в терминале) >
+            // возраст сессии (когда создана)
+            let right = copiedIdx == i ? "✓ скопировано" : (s.isLive ? "● активна" : agoText(s.created))
+            let rightCol = copiedIdx == i ? pal.green : (s.isLive ? pal.green : pal.dim)
             let rightW = (right as NSString).size(withAttributes:
                 [.font: NSFont.systemFont(ofSize: 9.5, weight: .medium)]).width
 
@@ -583,16 +601,22 @@ if argv.count >= 3 && argv[1] == "--panel" {
     u.scopedPct = 22; u.scopedLabel = "Fable"
     u.subscription = "max"; u.ok = true; u.fetchedAt = Date()
     v.usage = u
-    v.sessions = argv.contains("real") ? scanSessions() : [
+    if argv.contains("collapsed") {
+        v.sessionsOpen = false
+        v.setFrameSize(NSSize(width: 300, height: 226))
+    }
+    var fake = [
         SessionInfo(id: "9f7c66b0", name: "Откликаться на задания по веб-разработке на Kwork",
-                    cwd: "/Users/lebedev/LebedevClaude", mtime: Date().addingTimeInterval(-320)),
+                    cwd: "/Users/lebedev/LebedevClaude", created: Date().addingTimeInterval(-320), mtime: Date()),
         SessionInfo(id: "d3421ead", name: "Проверить видео FailTier и классификацию падений",
-                    cwd: "/Users/lebedev/LebedevClaude", mtime: Date().addingTimeInterval(-2900)),
+                    cwd: "/Users/lebedev/LebedevClaude", created: Date().addingTimeInterval(-2900), mtime: Date()),
         SessionInfo(id: "3b179940", name: "Claude Bar — сессии в попапе",
-                    cwd: "/Users/lebedev", mtime: Date().addingTimeInterval(-9000)),
+                    cwd: "/Users/lebedev", created: Date().addingTimeInterval(-9000), mtime: Date()),
         SessionInfo(id: "884a4e88", name: "Пересборка иконки Ghostty",
-                    cwd: "/Users/lebedev", mtime: Date().addingTimeInterval(-190000)),
+                    cwd: "/Users/lebedev", created: Date().addingTimeInterval(-190000), mtime: Date()),
     ]
+    fake[0].isLive = true
+    v.sessions = argv.contains("real") ? scanSessions() : fake
     if let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
         v.cacheDisplay(in: v.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: argv[2]))
@@ -665,6 +689,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let d = UserDefaults.standard
         return d.object(forKey: "showRemaining") == nil ? true : d.bool(forKey: "showRemaining")
     }()
+    // секция «Сессии» в попапе раскрыта
+    var sessionsOpen: Bool = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "sessionsOpen") == nil ? true : d.bool(forKey: "sessionsOpen")
+    }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -676,8 +705,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let vc = NSViewController()
         vc.view = panel
         popover.contentViewController = vc
-        popover.contentSize = panel.frame.size
         popover.behavior = .transient
+        panel.onToggleSessions = { [weak self] in
+            guard let self = self else { return }
+            self.sessionsOpen.toggle()
+            UserDefaults.standard.set(self.sessionsOpen, forKey: "sessionsOpen")
+            self.applySessionsState()
+        }
+        applySessionsState()
 
         render()                         // «Claude…» пока не пришёл первый ответ
         refresh(force: true)             // сразу тянем
@@ -873,6 +908,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         }
+    }
+
+    // Высота панели: секция сессий раскрыта → полная, свёрнута → только шкалы+заголовок.
+    func applySessionsState() {
+        let h: CGFloat = sessionsOpen ? 346 : 226
+        panel.sessionsOpen = sessionsOpen
+        panel.setFrameSize(NSSize(width: 300, height: h))
+        popover.contentSize = NSSize(width: 300, height: h)
+        panel.needsDisplay = true
     }
 
     // Скан сессий — в фоне (mmap+поиск по 4 файлам, но не на главном потоке).
