@@ -404,9 +404,10 @@ func fetchUsage(_ completion: @escaping (Usage) -> Void) {
 final class PanelView: NSView {
     var usage = Usage()
     var showRemaining = true          // true — остаток лимита, false — расход
-    var sessions: [SessionInfo] = []  // последние сессии Claude Code (клик → resume-команда в буфер)
-    var sessionsOpen = true           // секция раскрыта (клик по заголовку сворачивает)
+    var sessions: [SessionInfo] = [] { didSet { rebuildTooltips() } }  // клик → resume-команда в буфер
+    var sessionsOpen = true { didSet { rebuildTooltips() } }          // клик по заголовку сворачивает
     var onToggleSessions: (() -> Void)?
+    private var tooltipOwners: [NSString] = []   // addToolTip не ретейнит owner — держим сами
     private var rowRects: [NSRect] = []   // хитбоксы строк сессий (координаты flipped)
     private var headerRect = NSRect.zero  // хитбокс заголовка «СЕССИИ» (клик = свернуть/раскрыть)
     private var hoverIdx: Int? = nil
@@ -445,6 +446,21 @@ final class PanelView: NSView {
         copiedTimer?.invalidate()
         copiedTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: false) { [weak self] _ in
             self?.copiedIdx = nil; self?.needsDisplay = true
+        }
+    }
+
+    // Тултипы: задержал мышь на строке ~1 с — показывается полное название.
+    // Ректы совпадают с хитбоксами строк в drawSessions.
+    private func rebuildTooltips() {
+        removeAllToolTips()
+        tooltipOwners = []
+        guard sessionsOpen else { return }
+        for (i, s) in sessions.prefix(4).enumerated() {
+            let y: CGFloat = 224 + CGFloat(i) * 29
+            let owner = s.name as NSString
+            tooltipOwners.append(owner)
+            addToolTip(NSRect(x: 10, y: y - 5, width: bounds.width - 20, height: 26),
+                       owner: owner, userData: nil)
         }
     }
 
@@ -552,7 +568,6 @@ final class PanelView: NSView {
         drawText(sessionsOpen ? "СЕССИИ ▾" : "СЕССИИ ▸", pad, 206, 9, .semibold, pal.dim)
         headerRect = NSRect(x: 0, y: 197, width: W, height: 24)
         guard sessionsOpen else { return }
-        drawText("клик → команда в буфер", W - pad, 206, 9, .regular, pal.dim, right: true)
 
         if sessions.isEmpty {
             drawText("сканирую…", W/2, 260, 11, .medium, pal.dim, center: true)
