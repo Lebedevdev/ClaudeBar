@@ -242,6 +242,92 @@ func hmText(_ d: Date) -> String {
 }
 
 // ============================================================================
+//  Последние сессии Claude Code
+// ============================================================================
+// Сканируем ~/.claude/projects/*/*.jsonl (транскрипты сессий), берём 4 самых
+// свежих по mtime. Название — из записи {"type":"ai-title"} (то, что Claude Code
+// показывает в заголовке вкладки), cwd — из первой записи. Клик по строке в
+// панели копирует «cd <cwd> && claude --resume <id>» в буфер обмена.
+struct SessionInfo {
+    let id: String       // uuid сессии (имя файла без .jsonl)
+    let name: String     // ai-title либо имя папки проекта
+    let cwd: String      // рабочая папка сессии ("" если не нашли)
+    let mtime: Date      // последняя активность
+    var resumeCommand: String {
+        cwd.isEmpty ? "claude --resume \(id)" : "cd '\(cwd)' && claude --resume \(id)"
+    }
+}
+
+// Достать строковое значение JSON-ключа из сырых байт транскрипта (mmap, без
+// полного JSON-парса — файлы бывают по 30 МБ). Читаем до неэкранированной «"».
+func extractJSONString(_ data: Data, key: String, backwards: Bool) -> String? {
+    guard let pat = "\"\(key)\":\"".data(using: .utf8),
+          let r = data.range(of: pat, options: backwards ? .backwards : []) else { return nil }
+    var bytes: [UInt8] = []
+    var i = r.upperBound
+    while i < data.count && bytes.count < 400 {
+        let b = data[i]
+        if b == 0x22 { break }                                  // закрывающая "
+        if b == 0x5C && i + 1 < data.count {                    // экранирование \x
+            let n = data[i+1]
+            bytes.append(n == 0x6E || n == 0x74 ? 0x20 : n)     // \n,\t → пробел; \" \\ → байт
+            i += 2; continue
+        }
+        bytes.append(b); i += 1
+    }
+    return String(bytes: bytes, encoding: .utf8)
+}
+
+// Кэш разбора: транскрипт живой сессии меняется постоянно, но старые — нет.
+var sessionParseCache: [String: (mtime: Date, info: SessionInfo)] = [:]
+
+func parseSession(_ path: String, mtime: Date) -> SessionInfo? {
+    if let c = sessionParseCache[path], c.mtime == mtime { return c.info }
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .alwaysMapped) else { return nil }
+    let id = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+    let cwd = extractJSONString(data, key: "cwd", backwards: false) ?? ""
+    var name = extractJSONString(data, key: "aiTitle", backwards: true)   // последний ai-title
+    if name == nil || name!.isEmpty {
+        name = cwd.isEmpty ? "Сессия " + id.prefix(8) : (cwd as NSString).lastPathComponent
+    }
+    let info = SessionInfo(id: id, name: name!, cwd: cwd, mtime: mtime)
+    sessionParseCache[path] = (mtime, info)
+    return info
+}
+
+func scanSessions(limit: Int = 4) -> [SessionInfo] {
+    let fm = FileManager.default
+    let root = NSHomeDirectory() + "/.claude/projects"
+    var files: [(path: String, mtime: Date)] = []
+    for proj in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
+        let dir = root + "/" + proj
+        for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where f.hasSuffix(".jsonl") {
+            let p = dir + "/" + f
+            guard let a = try? fm.attributesOfItem(atPath: p),
+                  let mt = a[.modificationDate] as? Date,
+                  let sz = a[.size] as? Int, sz > 2048 else { continue }   // пустые форки-заглушки мимо
+            files.append((p, mt))
+        }
+    }
+    files.sort { $0.mtime > $1.mtime }
+    var out: [SessionInfo] = []
+    for f in files.prefix(16) {
+        if out.count >= limit { break }
+        if let s = parseSession(f.path, mtime: f.mtime) { out.append(s) }
+    }
+    return out
+}
+
+// «5 мин назад» / «2 ч назад» / «3 д назад»
+func agoText(_ d: Date) -> String {
+    let s = max(0, Int(-d.timeIntervalSinceNow))
+    if s < 60 { return "только что" }
+    if s < 3600 { return "\(s/60) мин назад" }
+    if s < 86400 { return "\(s/3600) ч назад" }
+    return "\(s/86400) д назад"
+}
+
+// ============================================================================
 //  Keychain + сеть
 // ============================================================================
 // Токен подписки лежит в Keychain (item «Claude Code-credentials», acct = логин).
@@ -309,8 +395,53 @@ func fetchUsage(_ completion: @escaping (Usage) -> Void) {
 final class PanelView: NSView {
     var usage = Usage()
     var showRemaining = true          // true — остаток лимита, false — расход
+    var sessions: [SessionInfo] = []  // последние сессии Claude Code (клик → resume-команда в буфер)
+    private var rowRects: [NSRect] = []   // хитбоксы строк сессий (координаты flipped)
+    private var hoverIdx: Int? = nil
+    private var copiedIdx: Int? = nil     // строка с бейджем «✓ скопировано»
+    private var copiedTimer: Timer?
     override var isFlipped: Bool { true }
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
+
+    // --- мышь: hover-подсветка и клик-копирование ---
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+    private func rowIndex(at p: NSPoint) -> Int? { rowRects.firstIndex { $0.contains(p) } }
+    override func mouseMoved(with e: NSEvent) {
+        let idx = rowIndex(at: convert(e.locationInWindow, from: nil))
+        if idx != hoverIdx { hoverIdx = idx; needsDisplay = true }
+        NSCursor.pointingHand.set()
+        if idx == nil { NSCursor.arrow.set() }
+    }
+    override func mouseExited(with e: NSEvent) {
+        if hoverIdx != nil { hoverIdx = nil; needsDisplay = true }
+        NSCursor.arrow.set()
+    }
+    override func mouseDown(with e: NSEvent) {
+        guard let idx = rowIndex(at: convert(e.locationInWindow, from: nil)),
+              idx < sessions.count else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(sessions[idx].resumeCommand, forType: .string)
+        copiedIdx = idx; needsDisplay = true
+        copiedTimer?.invalidate()
+        copiedTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: false) { [weak self] _ in
+            self?.copiedIdx = nil; self?.needsDisplay = true
+        }
+    }
+
+    // Обрезка строки с «…» под максимальную ширину.
+    private func fit(_ s: String, _ font: NSFont, _ maxW: CGFloat) -> String {
+        let a: [NSAttributedString.Key: Any] = [.font: font]
+        if (s as NSString).size(withAttributes: a).width <= maxW { return s }
+        var t = s
+        while t.count > 1 && ((t + "…") as NSString).size(withAttributes: a).width > maxW { t.removeLast() }
+        return t + "…"
+    }
 
     // LED-шкала с красной стрелкой (фирменный стиль семейства)
     private func ledBar(_ ctx: CGContext, _ bar: CGRect, frac: CGFloat, _ pal: Palette, remaining: Bool) {
@@ -393,6 +524,47 @@ final class PanelView: NSView {
             drawText("обновлено", pad, 174, 10, .medium, pal.dim)
             drawText(hmText(at), W - pad, 174, 10, .medium, pal.dim, right: true)
         }
+
+        drawSessions(ctx, pal, W, pad)
+    }
+
+    // --- Секция «Сессии»: последние транскрипты, клик копирует resume-команду ---
+    private func drawSessions(_ ctx: CGContext, _ pal: Palette, _ W: CGFloat, _ pad: CGFloat) {
+        rowRects = []
+        ctx.setFillColor(pal.separator.cgColor)
+        ctx.fill(CGRect(x: pad, y: 196, width: W - 2*pad, height: 1))
+
+        drawText("СЕССИИ", pad, 206, 9, .semibold, pal.dim)
+        drawText("клик → команда в буфер", W - pad, 206, 9, .regular, pal.dim, right: true)
+
+        if sessions.isEmpty {
+            drawText("сканирую…", W/2, 260, 11, .medium, pal.dim, center: true)
+            return
+        }
+
+        let nameFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        for (i, s) in sessions.prefix(4).enumerated() {
+            let y: CGFloat = 224 + CGFloat(i) * 29
+            let row = NSRect(x: pad - 8, y: y - 5, width: W - 2*pad + 16, height: 26)
+            rowRects.append(row)
+
+            if hoverIdx == i {   // hover-подсветка
+                let rr = CGPath(roundedRect: row, cornerWidth: 6, cornerHeight: 6, transform: nil)
+                ctx.addPath(rr)
+                ctx.setFillColor((pal.title == NSColor.white
+                    ? NSColor(white: 1, alpha: 0.07) : NSColor(white: 0, alpha: 0.06)).cgColor)
+                ctx.fillPath()
+            }
+
+            // справа: время либо бейдж «скопировано»
+            let right = copiedIdx == i ? "✓ скопировано" : agoText(s.mtime)
+            let rightCol = copiedIdx == i ? pal.green : pal.dim
+            let rightW = (right as NSString).size(withAttributes:
+                [.font: NSFont.systemFont(ofSize: 9.5, weight: .medium)]).width
+
+            drawText(fit(s.name, nameFont, W - 2*pad - rightW - 10), pad, y, 11.5, .medium, pal.rowText)
+            drawText(right, W - pad, y + 2, 9.5, .medium, rightCol, right: true)
+        }
     }
 }
 
@@ -402,7 +574,7 @@ final class PanelView: NSView {
 let argv = CommandLine.arguments
 if argv.count >= 3 && argv[1] == "--panel" {
     let light = argv.contains("light")
-    let v = PanelView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+    let v = PanelView(frame: NSRect(x: 0, y: 0, width: 300, height: 346))
     v.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
     v.showRemaining = !argv.contains("spent")   // spent → режим расхода для проверки
     var u = Usage()
@@ -411,6 +583,16 @@ if argv.count >= 3 && argv[1] == "--panel" {
     u.scopedPct = 22; u.scopedLabel = "Fable"
     u.subscription = "max"; u.ok = true; u.fetchedAt = Date()
     v.usage = u
+    v.sessions = argv.contains("real") ? scanSessions() : [
+        SessionInfo(id: "9f7c66b0", name: "Откликаться на задания по веб-разработке на Kwork",
+                    cwd: "/Users/lebedev/LebedevClaude", mtime: Date().addingTimeInterval(-320)),
+        SessionInfo(id: "d3421ead", name: "Проверить видео FailTier и классификацию падений",
+                    cwd: "/Users/lebedev/LebedevClaude", mtime: Date().addingTimeInterval(-2900)),
+        SessionInfo(id: "3b179940", name: "Claude Bar — сессии в попапе",
+                    cwd: "/Users/lebedev", mtime: Date().addingTimeInterval(-9000)),
+        SessionInfo(id: "884a4e88", name: "Пересборка иконки Ghostty",
+                    cwd: "/Users/lebedev", mtime: Date().addingTimeInterval(-190000)),
+    ]
     if let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
         v.cacheDisplay(in: v.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: argv[2]))
@@ -456,7 +638,7 @@ if argv.count >= 3 && argv[1] == "--shapes" {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     let popover = NSPopover()
-    let panel = PanelView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+    let panel = PanelView(frame: NSRect(x: 0, y: 0, width: 300, height: 346))
     var timer: Timer?
     var usage = Usage()
     var lastFetch: Date?
@@ -686,9 +868,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown { popover.performClose(nil) }
         else {
             refresh(force: false)        // подтянуть свежее при открытии (троттлинг 60с)
+            refreshSessions()            // и список последних сессий
             render()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
+        }
+    }
+
+    // Скан сессий — в фоне (mmap+поиск по 4 файлам, но не на главном потоке).
+    func refreshSessions() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let s = scanSessions()
+            DispatchQueue.main.async {
+                self?.panel.sessions = s
+                self?.panel.needsDisplay = true
+            }
         }
     }
 }
