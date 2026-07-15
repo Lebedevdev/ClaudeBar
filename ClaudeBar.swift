@@ -281,34 +281,34 @@ func extractJSONString(_ data: Data, key: String, backwards: Bool) -> String? {
     return String(bytes: bytes, encoding: .utf8)
 }
 
-// Первый содержательный запрос пользователя в сессии — для тултипа «о чём просил».
-// Идём по строкам с начала транскрипта, пропускаем служебные (<command>, Caveat, сайдчейны).
-func firstUserText(_ data: Data) -> String? {
+// Содержательные запросы пользователя из сессии — для тултипа «о чём просил».
+// Один проход по транскрипту: первые 2 и последние 2 сообщения (gapped = между
+// ними были ещё). Служебное пропускаем: <command>, Caveat, сайдчейны, tool_result
+// (выводы инструментов в транскрипте тоже помечены type:user).
+func userTexts(_ data: Data) -> (first: [String], last: [String], gapped: Bool) {
+    var first: [String] = [], last: [String] = [], total = 0
     var start = data.startIndex
-    var checked = 0
-    while start < data.endIndex && checked < 300 {
+    while start < data.endIndex {
         let nl = data[start...].firstIndex(of: 0x0A) ?? data.endIndex
         let line = data[start..<nl]
-        checked += 1
-        if line.range(of: Data("\"type\":\"user\"".utf8)) != nil,
-           line.range(of: Data("\"isSidechain\":true".utf8)) == nil,
-           line.range(of: Data("\"tool_result\"".utf8)) == nil,       // выводы инструментов тоже type:user
-           line.range(of: Data("\"toolUseResult\"".utf8)) == nil {
-            var txt = extractJSONString(line, key: "content", backwards: false)
-            if txt == nil || txt!.isEmpty || txt!.hasPrefix("{") {
-                txt = extractJSONString(line, key: "text", backwards: false)
-            }
-            if var t = txt {
-                t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !t.isEmpty && !t.hasPrefix("<") && !t.hasPrefix("Caveat")
-                    && !t.hasPrefix("[Request interrupted") {
-                    return t
-                }
-            }
-        }
         start = nl == data.endIndex ? data.endIndex : data.index(after: nl)
+        guard line.range(of: Data("\"type\":\"user\"".utf8)) != nil,
+              line.range(of: Data("\"isSidechain\":true".utf8)) == nil,
+              line.range(of: Data("\"tool_result\"".utf8)) == nil,
+              line.range(of: Data("\"toolUseResult\"".utf8)) == nil else { continue }
+        var txt = extractJSONString(line, key: "content", backwards: false)
+        if txt == nil || txt!.isEmpty || txt!.hasPrefix("{") {
+            txt = extractJSONString(line, key: "text", backwards: false)
+        }
+        guard var t = txt else { continue }
+        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !t.hasPrefix("<"), !t.hasPrefix("Caveat"),
+              !t.hasPrefix("[Request interrupted") else { continue }
+        total += 1
+        if first.count < 2 { first.append(t) }
+        else { last.append(t); if last.count > 2 { last.removeFirst() } }
     }
-    return nil
+    return (first, last, total > 4)
 }
 
 // Кэш разбора: транскрипт живой сессии меняется постоянно, но старые — нет.
@@ -323,8 +323,13 @@ func parseSession(_ path: String, created: Date, mtime: Date) -> SessionInfo? {
     if name == nil || name!.isEmpty {
         name = cwd.isEmpty ? "Сессия " + id.prefix(8) : (cwd as NSString).lastPathComponent
     }
-    var summary = firstUserText(data) ?? ""
-    if summary.count > 240 { summary = String(summary.prefix(240)) + "…" }
+    // Тултип: первые 2 + последние 2 сообщения пользователя, «⋯» если между ними пропуск
+    let msgs = userTexts(data)
+    func clip(_ s: String) -> String { s.count > 110 ? String(s.prefix(110)) + "…" : s }
+    var parts = msgs.first.map { "«\(clip($0))»" }
+    if msgs.gapped { parts.append("⋯") }
+    parts += msgs.last.map { "«\(clip($0))»" }
+    let summary = parts.joined(separator: "\n")
     let info = SessionInfo(id: id, name: name!, summary: summary, cwd: cwd, created: created, mtime: mtime)
     sessionParseCache[path] = (mtime, info)
     return info
@@ -493,8 +498,8 @@ final class PanelView: NSView {
         guard sessionsOpen && rowsVisible else { return }
         for (i, s) in sessions.prefix(4).enumerated() {
             let y: CGFloat = 224 + CGFloat(i) * 29
-            // полное название + первый запрос пользователя
-            let tip = s.summary.isEmpty ? s.name : "\(s.name)\n\n«\(s.summary)»"
+            // полное название + первые/последние сообщения пользователя
+            let tip = s.summary.isEmpty ? s.name : "\(s.name)\n\n\(s.summary)"
             let owner = tip as NSString
             tooltipOwners.append(owner)
             addToolTip(NSRect(x: 10, y: y - 5, width: bounds.width - 20, height: 26),
