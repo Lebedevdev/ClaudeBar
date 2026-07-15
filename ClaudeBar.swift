@@ -251,6 +251,7 @@ func hmText(_ d: Date) -> String {
 struct SessionInfo {
     let id: String       // uuid сессии (имя файла без .jsonl)
     let name: String     // ai-title либо имя папки проекта
+    let summary: String  // первый запрос пользователя («о чём просил») — для тултипа
     let cwd: String      // рабочая папка сессии ("" если не нашли)
     let created: Date    // когда сессия создана (birth time файла)
     let mtime: Date      // последняя активность (для сортировки)
@@ -267,17 +268,47 @@ func extractJSONString(_ data: Data, key: String, backwards: Bool) -> String? {
           let r = data.range(of: pat, options: backwards ? .backwards : []) else { return nil }
     var bytes: [UInt8] = []
     var i = r.upperBound
-    while i < data.count && bytes.count < 400 {
+    while i < data.endIndex && bytes.count < 400 {              // endIndex, не count — работает и для слайсов
         let b = data[i]
         if b == 0x22 { break }                                  // закрывающая "
-        if b == 0x5C && i + 1 < data.count {                    // экранирование \x
-            let n = data[i+1]
+        if b == 0x5C && data.index(after: i) < data.endIndex {  // экранирование \x
+            let n = data[data.index(after: i)]
             bytes.append(n == 0x6E || n == 0x74 ? 0x20 : n)     // \n,\t → пробел; \" \\ → байт
-            i += 2; continue
+            i = data.index(i, offsetBy: 2); continue
         }
-        bytes.append(b); i += 1
+        bytes.append(b); i = data.index(after: i)
     }
     return String(bytes: bytes, encoding: .utf8)
+}
+
+// Первый содержательный запрос пользователя в сессии — для тултипа «о чём просил».
+// Идём по строкам с начала транскрипта, пропускаем служебные (<command>, Caveat, сайдчейны).
+func firstUserText(_ data: Data) -> String? {
+    var start = data.startIndex
+    var checked = 0
+    while start < data.endIndex && checked < 300 {
+        let nl = data[start...].firstIndex(of: 0x0A) ?? data.endIndex
+        let line = data[start..<nl]
+        checked += 1
+        if line.range(of: Data("\"type\":\"user\"".utf8)) != nil,
+           line.range(of: Data("\"isSidechain\":true".utf8)) == nil,
+           line.range(of: Data("\"tool_result\"".utf8)) == nil,       // выводы инструментов тоже type:user
+           line.range(of: Data("\"toolUseResult\"".utf8)) == nil {
+            var txt = extractJSONString(line, key: "content", backwards: false)
+            if txt == nil || txt!.isEmpty || txt!.hasPrefix("{") {
+                txt = extractJSONString(line, key: "text", backwards: false)
+            }
+            if var t = txt {
+                t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty && !t.hasPrefix("<") && !t.hasPrefix("Caveat")
+                    && !t.hasPrefix("[Request interrupted") {
+                    return t
+                }
+            }
+        }
+        start = nl == data.endIndex ? data.endIndex : data.index(after: nl)
+    }
+    return nil
 }
 
 // Кэш разбора: транскрипт живой сессии меняется постоянно, но старые — нет.
@@ -292,7 +323,9 @@ func parseSession(_ path: String, created: Date, mtime: Date) -> SessionInfo? {
     if name == nil || name!.isEmpty {
         name = cwd.isEmpty ? "Сессия " + id.prefix(8) : (cwd as NSString).lastPathComponent
     }
-    let info = SessionInfo(id: id, name: name!, cwd: cwd, created: created, mtime: mtime)
+    var summary = firstUserText(data) ?? ""
+    if summary.count > 240 { summary = String(summary.prefix(240)) + "…" }
+    let info = SessionInfo(id: id, name: name!, summary: summary, cwd: cwd, created: created, mtime: mtime)
     sessionParseCache[path] = (mtime, info)
     return info
 }
@@ -405,7 +438,10 @@ final class PanelView: NSView {
     var usage = Usage()
     var showRemaining = true          // true — остаток лимита, false — расход
     var sessions: [SessionInfo] = [] { didSet { rebuildTooltips() } }  // клик → resume-команда в буфер
-    var sessionsOpen = true { didSet { rebuildTooltips() } }          // клик по заголовку сворачивает
+    var sessionsOpen = true { didSet { rebuildTooltips() } }          // клик по заголовку сворачивает (стрелка)
+    // Строки рисуются, пока идёт анимация сворачивания (клип по высоте даёт «шторку»);
+    // прячутся только по её завершении.
+    var rowsVisible = true { didSet { rebuildTooltips(); needsDisplay = true } }
     var onToggleSessions: (() -> Void)?
     private var tooltipOwners: [NSString] = []   // addToolTip не ретейнит owner — держим сами
     private var rowRects: [NSRect] = []   // хитбоксы строк сессий (координаты flipped)
@@ -454,10 +490,12 @@ final class PanelView: NSView {
     private func rebuildTooltips() {
         removeAllToolTips()
         tooltipOwners = []
-        guard sessionsOpen else { return }
+        guard sessionsOpen && rowsVisible else { return }
         for (i, s) in sessions.prefix(4).enumerated() {
             let y: CGFloat = 224 + CGFloat(i) * 29
-            let owner = s.name as NSString
+            // полное название + первый запрос пользователя
+            let tip = s.summary.isEmpty ? s.name : "\(s.name)\n\n«\(s.summary)»"
+            let owner = tip as NSString
             tooltipOwners.append(owner)
             addToolTip(NSRect(x: 10, y: y - 5, width: bounds.width - 20, height: 26),
                        owner: owner, userData: nil)
@@ -567,7 +605,7 @@ final class PanelView: NSView {
 
         drawText(sessionsOpen ? "СЕССИИ ▾" : "СЕССИИ ▸", pad, 206, 9, .semibold, pal.dim)
         headerRect = NSRect(x: 0, y: 197, width: W, height: 24)
-        guard sessionsOpen else { return }
+        guard rowsVisible else { return }
 
         if sessions.isEmpty {
             drawText("сканирую…", W/2, 260, 11, .medium, pal.dim, center: true)
@@ -618,16 +656,17 @@ if argv.count >= 3 && argv[1] == "--panel" {
     v.usage = u
     if argv.contains("collapsed") {
         v.sessionsOpen = false
+        v.rowsVisible = false
         v.setFrameSize(NSSize(width: 300, height: 226))
     }
     var fake = [
-        SessionInfo(id: "9f7c66b0", name: "Откликаться на задания по веб-разработке на Kwork",
+        SessionInfo(id: "9f7c66b0", name: "Откликаться на задания по веб-разработке на Kwork", summary: "смотри у нас есть биржа",
                     cwd: "/Users/lebedev/LebedevClaude", created: Date().addingTimeInterval(-320), mtime: Date()),
-        SessionInfo(id: "d3421ead", name: "Проверить видео FailTier и классификацию падений",
+        SessionInfo(id: "d3421ead", name: "Проверить видео FailTier и классификацию падений", summary: "проверь клипы",
                     cwd: "/Users/lebedev/LebedevClaude", created: Date().addingTimeInterval(-2900), mtime: Date()),
-        SessionInfo(id: "3b179940", name: "Claude Bar — сессии в попапе",
+        SessionInfo(id: "3b179940", name: "Claude Bar — сессии в попапе", summary: "сделай приложение",
                     cwd: "/Users/lebedev", created: Date().addingTimeInterval(-9000), mtime: Date()),
-        SessionInfo(id: "884a4e88", name: "Пересборка иконки Ghostty",
+        SessionInfo(id: "884a4e88", name: "Пересборка иконки Ghostty", summary: "иконка терминала",
                     cwd: "/Users/lebedev", created: Date().addingTimeInterval(-190000), mtime: Date()),
     ]
     fake[0].isLive = true
@@ -637,6 +676,16 @@ if argv.count >= 3 && argv[1] == "--panel" {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: argv[2]))
     }
     print("превью готово: \(argv[2])")
+    exit(0)
+}
+
+// Отладка сканера сессий: ClaudeBar --sessions
+if argv.count >= 2 && argv[1] == "--sessions" {
+    for s in scanSessions() {
+        print("[\(s.isLive ? "LIVE" : agoText(s.created))] \(s.name)")
+        print("   summary: \(s.summary.prefix(120))")
+        print("   cmd: \(s.resumeCommand)")
+    }
     exit(0)
 }
 
@@ -725,7 +774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             self.sessionsOpen.toggle()
             UserDefaults.standard.set(self.sessionsOpen, forKey: "sessionsOpen")
-            self.applySessionsState()
+            self.applySessionsState(animated: true)
         }
         applySessionsState()
 
@@ -926,12 +975,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Высота панели: секция сессий раскрыта → полная, свёрнута → только шкалы+заголовок.
-    func applySessionsState() {
+    var sessionsAnimTimer: Timer?
+    func applySessionsState(animated: Bool = false) {
         let h: CGFloat = sessionsOpen ? 346 : 226
-        panel.sessionsOpen = sessionsOpen
-        panel.setFrameSize(NSSize(width: 300, height: h))
-        popover.contentSize = NSSize(width: 300, height: h)
+        panel.sessionsOpen = sessionsOpen                 // стрелка ▾/▸ — сразу
+        if sessionsOpen { panel.rowsVisible = true }      // при раскрытии строки видны с первого кадра
+        if animated && popover.isShown {
+            animatePopoverHeight(to: h) { [weak self] in
+                guard let self = self else { return }
+                if !self.sessionsOpen { self.panel.rowsVisible = false }
+            }
+        } else {
+            sessionsAnimTimer?.invalidate()
+            popover.contentSize = NSSize(width: 300, height: h)
+            panel.setFrameSize(NSSize(width: 300, height: h))
+            panel.rowsVisible = sessionsOpen
+        }
         panel.needsDisplay = true
+    }
+
+    // Плавное изменение высоты попапа (~0.22 с, easeOutCubic). Попап сам ресайзит
+    // panel под contentSize, строки клипаются по высоте — получается «шторка».
+    func animatePopoverHeight(to h: CGFloat, done: @escaping () -> Void) {
+        sessionsAnimTimer?.invalidate()
+        let start = popover.contentSize.height
+        guard abs(start - h) > 1 else { popover.contentSize = NSSize(width: 300, height: h); done(); return }
+        let t0 = Date(), dur = 0.22
+        sessionsAnimTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60, repeats: true) { [weak self] tm in
+            guard let self = self else { tm.invalidate(); return }
+            var f = CGFloat(Date().timeIntervalSince(t0) / dur)
+            if f >= 1 { f = 1; tm.invalidate() }
+            let e = 1 - pow(1 - f, 3)
+            self.popover.contentSize = NSSize(width: 300, height: start + (h - start) * e)
+            if f >= 1 { done() }
+        }
     }
 
     // Скан сессий — в фоне (mmap+поиск по 4 файлам, но не на главном потоке).
@@ -948,6 +1025,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+UserDefaults.standard.set(300, forKey: "NSInitialToolTipDelay")   // тултип через 0.3 с, а не ~1.5 с
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
