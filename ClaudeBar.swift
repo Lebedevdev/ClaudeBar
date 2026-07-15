@@ -282,8 +282,8 @@ func extractJSONString(_ data: Data, key: String, backwards: Bool) -> String? {
 }
 
 // Содержательные запросы пользователя из сессии — для тултипа «о чём просил».
-// Один проход по транскрипту: первые 2 и последние 2 сообщения (gapped = между
-// ними были ещё). Служебное пропускаем: <command>, Caveat, сайдчейны, tool_result
+// Один проход по транскрипту: первое и последнее сообщение (gapped = между ними
+// были ещё). Служебное пропускаем: <command>, Caveat, сайдчейны, tool_result
 // (выводы инструментов в транскрипте тоже помечены type:user).
 func userTexts(_ data: Data) -> (first: [String], last: [String], gapped: Bool) {
     var first: [String] = [], last: [String] = [], total = 0
@@ -301,14 +301,16 @@ func userTexts(_ data: Data) -> (first: [String], last: [String], gapped: Bool) 
             txt = extractJSONString(line, key: "text", backwards: false)
         }
         guard var t = txt else { continue }
-        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        // вставки вида [Image: source: …] и [Image #N] — мусор для тултипа
+        t = t.replacingOccurrences(of: #"\[Image[^\]]*\]"#, with: "", options: .regularExpression)
+             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, !t.hasPrefix("<"), !t.hasPrefix("Caveat"),
               !t.hasPrefix("[Request interrupted") else { continue }
         total += 1
-        if first.count < 2 { first.append(t) }
-        else { last.append(t); if last.count > 2 { last.removeFirst() } }
+        if first.isEmpty { first.append(t) }
+        else { last = [t] }
     }
-    return (first, last, total > 4)
+    return (first, last, total > 2)
 }
 
 // Кэш разбора: транскрипт живой сессии меняется постоянно, но старые — нет.
