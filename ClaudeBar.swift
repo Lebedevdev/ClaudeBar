@@ -667,14 +667,14 @@ if argv.count >= 3 && argv[1] == "--panel" {
         v.setFrameSize(NSSize(width: 300, height: 226))
     }
     var fake = [
-        SessionInfo(id: "9f7c66b0", name: "Откликаться на задания по веб-разработке на Kwork", summary: "смотри у нас есть биржа",
-                    cwd: "/Users/lebedev/LebedevClaude", created: Date().addingTimeInterval(-320), mtime: Date()),
-        SessionInfo(id: "d3421ead", name: "Проверить видео FailTier и классификацию падений", summary: "проверь клипы",
-                    cwd: "/Users/lebedev/LebedevClaude", created: Date().addingTimeInterval(-2900), mtime: Date()),
+        SessionInfo(id: "9f7c66b0", name: "Рефакторинг слоя загрузки данных", summary: "переписать сетевой слой",
+                    cwd: "/Users/me/Projects/app", created: Date().addingTimeInterval(-320), mtime: Date()),
+        SessionInfo(id: "d3421ead", name: "Починить падающие тесты в CI", summary: "тесты валятся на macOS",
+                    cwd: "/Users/me/Projects/app", created: Date().addingTimeInterval(-2900), mtime: Date()),
         SessionInfo(id: "3b179940", name: "Claude Bar — сессии в попапе", summary: "сделай приложение",
-                    cwd: "/Users/lebedev", created: Date().addingTimeInterval(-9000), mtime: Date()),
-        SessionInfo(id: "884a4e88", name: "Пересборка иконки Ghostty", summary: "иконка терминала",
-                    cwd: "/Users/lebedev", created: Date().addingTimeInterval(-190000), mtime: Date()),
+                    cwd: "/Users/me", created: Date().addingTimeInterval(-9000), mtime: Date()),
+        SessionInfo(id: "884a4e88", name: "Пересборка иконки терминала", summary: "иконка терминала",
+                    cwd: "/Users/me", created: Date().addingTimeInterval(-190000), mtime: Date()),
     ]
     fake[0].isLive = true
     v.sessions = argv.contains("real") ? scanSessions() : fake
