@@ -116,7 +116,9 @@ func litColor(_ pos: CGFloat, mono: Bool, dark: Bool) -> NSColor {
 func dimColor(dark: Bool) -> NSColor { dark ? NSColor(white: 1, alpha: 0.20) : NSColor(white: 0, alpha: 0.15) }
 func litCount(_ frac: CGFloat, _ n: Int) -> Int {
     let f = max(0, min(1, frac))
-    return f <= 0 ? 0 : max(1, Int((f * CGFloat(n)).rounded()))     // >0% → хотя бы один сегмент
+    // Равные четверти/десятые: ceil, а не rounded. У 4 столбиков пороги 25/50/75
+    // (1 = 0–25%, 4 = 75–100%), а не съехавшие 12.5/37.5/62.5/87.5. >0% → хотя бы один.
+    return f <= 0 ? 0 : min(n, Int(ceil(f * CGFloat(n))))
 }
 
 // Форма 0 (прямые) / 1 (параллелограммы): 10 сегментов, skew задаёт наклон.
